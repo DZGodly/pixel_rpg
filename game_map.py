@@ -12,6 +12,7 @@ AREA_FACTORY = 'factory'         # 废弃工厂（下方，中等难度）
 AREA_CYBERSPACE = 'cyberspace'   # 网络空间（左方，高难度）
 AREA_TUNNEL = 'tunnel'           # 地下通道（工厂→旧数据中心）
 AREA_BLACK_MARKET = 'black_market'  # 黑市（霓虹街隐藏入口）
+AREA_HOME = 'home'               # 家园（种菜/宠物）
 
 # 室内区域
 AREA_HOUSE_V1 = 'house_v1'      # 数据港-房屋1
@@ -23,13 +24,14 @@ AREA_HOUSE_N3 = 'house_n3'      # 霓虹街-房屋3
 
 INDOOR_AREAS = {AREA_HOUSE_V1, AREA_HOUSE_V2, AREA_HOUSE_V3,
                 AREA_HOUSE_N1, AREA_HOUSE_N2, AREA_HOUSE_N3,
-                AREA_BLACK_MARKET}
+                AREA_BLACK_MARKET, AREA_HOME}
 
 # 图块类型: 0=金属地板, 1=霓虹步道, 2=数据流, 3=金属墙, 4=信号塔, 5=电路板地板, 6=霓虹灯, 7=传送门
 #           8=工厂地板, 9=网络地板, 10=霓虹地砖
 #           11=室内地板, 12=室内墙, 13=桌子, 14=终端机
 #           15=书架, 16=沙发, 17=地毯, 18=吧台
 #           19=管道地板, 20=锈蚀墙
+#           21=农田地块, 22=围栏
 
 
 class GameMap:
@@ -50,6 +52,7 @@ class GameMap:
         self._gen_houses()
         self._gen_tunnel()
         self._gen_black_market()
+        self._gen_home()
 
     def _gen_village(self):
         """数据港 - 初始安全区"""
@@ -77,6 +80,13 @@ class GameMap:
                 for dx in range(3):
                     m[hy + dy][hx + dx] = 3  # 墙
             m[hy + 2][hx + 1] = 7  # 门口 = 传送门
+            m[hy + 2][hx] = 0      # 门口左侧打开
+            m[hy + 2][hx + 2] = 0  # 门口右侧打开
+            # 门前通道：确保门口下方一格可走
+            if 0 <= hy + 3 < H:
+                for dx in range(3):
+                    if m[hy + 3][hx + dx] == 3:
+                        m[hy + 3][hx + dx] = 0
         # 信号塔边界
         for x in range(W):
             if m[0][x] == 0: m[0][x] = 4
@@ -230,6 +240,13 @@ class GameMap:
                     if 0 <= hy+dy < H and 0 <= hx+dx < W:
                         m[hy + dy][hx + dx] = 3
             m[hy + 2][hx + 1] = 7  # 门口
+            m[hy + 2][hx] = 10     # 门口左侧打开
+            m[hy + 2][hx + 2] = 10 # 门口右侧打开
+            # 门前通道：确保门口下方一格可走
+            if 0 <= hy + 3 < H:
+                for dx in range(3):
+                    if 0 <= hx + dx < W and m[hy + 3][hx + dx] == 3:
+                        m[hy + 3][hx + dx] = 10
         # 边界信号塔
         for x in range(W):
             if m[0][x] not in (1, 7): m[0][x] = 4
@@ -640,6 +657,44 @@ class GameMap:
         if AREA_NEON_STREET in self.transitions:
             self.transitions[AREA_NEON_STREET].append((20, 4, AREA_BLACK_MARKET, 12, H - 2))
 
+    def _gen_home(self):
+        """家园地图 20x15"""
+        W, H = 20, 15
+        m = [[11] * W for _ in range(H)]
+        # 围墙
+        for x in range(W):
+            m[0][x] = 22
+            m[H - 1][x] = 22
+        for y in range(H):
+            m[y][0] = 22
+            m[y][W - 1] = 22
+        # 门口
+        m[H - 1][10] = 11
+        # 6块农田 (3x2排列)
+        for i in range(3):
+            for j in range(2):
+                fx = 3 + i * 5
+                fy = 3 + j * 5
+                m[fy][fx] = 21
+                m[fy][fx + 1] = 21
+        # 宠物区域（右侧）
+        for y in range(3, 8):
+            for x in range(16, 18):
+                m[y][x] = 11  # 保持地板
+        # 装饰
+        m[2][16] = 13  # 桌子（宠物管理台）
+        m[2][17] = 14  # 终端机
+
+        self.maps[AREA_HOME] = m
+        self.map_w[AREA_HOME] = W
+        self.map_h[AREA_HOME] = H
+        self.transitions[AREA_HOME] = [
+            (10, H - 1, AREA_VILLAGE, 10, 10),
+        ]
+        # 数据港添加到家园的入口
+        if AREA_VILLAGE in self.transitions:
+            self.transitions[AREA_VILLAGE].append((10, 9, AREA_HOME, 10, H - 2))
+
     def get_tile(self, area, x, y):
         m = self.maps.get(area)
         if m and 0 <= y < len(m) and 0 <= x < len(m[0]):
@@ -648,7 +703,7 @@ class GameMap:
 
     def is_walkable(self, area, x, y):
         t = self.get_tile(area, x, y)
-        return t in (0, 1, 5, 6, 7, 8, 9, 10, 11, 17, 19)
+        return t in (0, 1, 5, 6, 7, 8, 9, 10, 11, 17, 19, 21)
 
     def check_transition(self, area, tx, ty):
         for t in self.transitions.get(area, []):

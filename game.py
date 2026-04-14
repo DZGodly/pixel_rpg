@@ -20,10 +20,12 @@ from game_map import (GameMap, AREA_VILLAGE, AREA_FOREST, AREA_DUNGEON,
                       AREA_NEON_STREET, AREA_FACTORY, AREA_CYBERSPACE,
                       AREA_HOUSE_V1, AREA_HOUSE_V2, AREA_HOUSE_V3,
                       AREA_HOUSE_N1, AREA_HOUSE_N2, AREA_HOUSE_N3,
-                      AREA_TUNNEL, AREA_BLACK_MARKET,
+                      AREA_TUNNEL, AREA_BLACK_MARKET, AREA_HOME,
                       INDOOR_AREAS)
 from entities import (Item, ITEMS_DB, PlayerStats, Player, NPC, EnemyDef, ENEMY_DEFS, ENCOUNTER_TABLE,
-                      SKILL_TREE, StatusEffect)
+                      SKILL_TREE, StatusEffect, ROMANCE_CHARS, RomanceChar,
+                      CROPS_DB, PlotState, PETS_DB, PetDef,
+                      FUSION_RECIPES, ACHIEVEMENTS, MealDef, MEALS_DB)
 from combat import Combat, CombatState
 from dialogue import DialogueBox
 
@@ -39,6 +41,9 @@ class GameState(Enum):
     ENDING = auto()
     SKILL_TREE = auto()
     UPGRADE_SHOP = auto()
+    FARM = auto()
+    PET_MENU = auto()
+    COOKING = auto()
 
 class Game:
     def __init__(self):
@@ -60,7 +65,6 @@ class Game:
         self.menu_index = 0
         self.inv_index = 0
         self.show_inventory = False
-        self.title_blink = 0
         self.title_index = 0
         self.transition_alpha = 0
         self.transitioning = False
@@ -75,6 +79,38 @@ class Game:
         # 通关动画
         self.ending_timer = 0
         self.ending_particles = ParticleSystem()
+        # 烹饪UI
+        self.cooking_index = 0
+        # 宠物喂食UI
+        self.pet_feed_mode = False
+        self.pet_feed_index = 0
+        # 预渲染标题背景
+        self._title_bg = self._prerender_title_bg()
+        # 瓦片渲染查找表: tile_id -> (base_key, overlay_key or None)
+        self._tile_map = {
+            0: ('grass', None),       # 金属地板 (variant handled separately)
+            1: ('path', None),        # 霓虹步道
+            3: ('wall', None),        # 金属墙
+            4: ('grass', 'tree'),     # 信号塔
+            5: ('dungeon_floor', None),  # 电路板地板
+            6: ('grass', 'flower'),   # 霓虹灯
+            7: ('door', None),        # 传送门
+            8: ('factory_floor', None),  # 工厂地板
+            9: ('cyber_floor', None),    # 网络地板
+            10: ('neon_tile', None),     # 霓虹地砖
+            11: ('indoor_floor', None),  # 室内地板
+            12: ('indoor_wall', None),   # 室内墙
+            13: ('indoor_floor', 'table'),     # 桌子
+            14: ('indoor_floor', 'terminal'),  # 终端机
+            15: ('indoor_floor', 'bookshelf'), # 书架
+            16: ('indoor_floor', 'sofa'),      # 沙发
+            17: ('carpet', None),        # 地毯
+            18: ('indoor_floor', 'bar_counter'),  # 吧台
+            19: ('pipe_floor', None),    # 管道地板
+            20: ('rust_wall', None),     # 锈蚀墙
+            21: ('farm_plot', None),     # 农田
+            22: ('fence', None),         # 围栏
+        }
         # Boss触发点
         self.boss_positions = {
             (AREA_FACTORY, 35, 30): 'mad_overseer',
@@ -288,6 +324,36 @@ class Game:
         # 随机事件步数计数
         self.random_event_steps = 0
 
+        # 恋爱系统
+        self.romance_npcs = []
+        for rc in ROMANCE_CHARS.values():
+            npc = NPC(rc.x, rc.y, rc.sprite_key, rc.name, [], rc.area)
+            self.romance_npcs.append(npc)
+        self.romance_choice_active = False  # 好感度80时的确认选择
+        self.romance_choice_char = None
+        self.romance_choice_index = 0
+        # 送礼系统
+        self.gift_mode = False
+        self.gift_char_id = None
+        self.gift_index = 0
+        # 伴侣探索对话
+        self.partner_dialogue_timer = 0
+
+        # 家园系统
+        self.player.init_farm()
+        self.farm_index = 0       # 当前选中的菜地
+        self.farm_seed_index = 0  # 种子选择
+        self.farm_mode = 0        # 0=查看, 1=选种子
+
+        # 宠物系统
+        self.pet_menu_index = 0
+        self.pet_shop_mode = False
+        self.pet_shop_index = 0
+        # 暗网连战
+        self.darknet_phase = 0  # 0=未开始, 1=防火墙守卫, 2=数据吞噬者, 3=暗网之主
+        # 初始区域记录
+        self.player.visited_areas.add(self.player.area)
+
     def run(self):
         running = True
         while running:
@@ -315,7 +381,36 @@ class Game:
                     elif self.title_index == 1 and os.path.exists(SAVE_PATH):  # 读取存档
                         self._load_game()
         elif self.state == GameState.EXPLORE:
+            if self.gift_mode:
+                if event.type == pygame.KEYDOWN:
+                    self._handle_gift_input(event)
+                return
+            if self.romance_choice_active:
+                if event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_UP or event.key == pygame.K_DOWN:
+                        self.romance_choice_index = 1 - self.romance_choice_index
+                    elif event.key in (pygame.K_RETURN, pygame.K_j):
+                        if self.romance_choice_index == 0:  # 接受
+                            char_id = self.romance_choice_char
+                            rc = ROMANCE_CHARS[char_id]
+                            self.player.commit_partner(char_id)
+                            self.message_queue.append((f"♥ {rc.name}成为了你的伴侣！", 180))
+                            self.message_queue.append((f"♥ {rc.name}加入了队伍！", 120))
+                        self.romance_choice_active = False
+                        self.romance_choice_char = None
+                return
             if self.dialogue.active:
+                if event.type == pygame.KEYDOWN and event.key == pygame.K_g and self.gift_char_id:
+                    # 进入送礼模式
+                    self.dialogue.active = False
+                    giftable = [(k, c) for k, c in self.player.inventory
+                                if ITEMS_DB[k].item_type == 'material']
+                    if giftable:
+                        self.gift_mode = True
+                        self.gift_index = 0
+                    else:
+                        self.message_queue.append(("没有可以送的物品！", 90))
+                    return
                 self.dialogue.handle_input(event, self.player)
                 return
             if event.type == pygame.KEYDOWN:
@@ -323,6 +418,8 @@ class Game:
                     self.state = GameState.MENU
                     self.menu_index = 0
                     self.show_inventory = False
+                elif event.key == pygame.K_F5:
+                    self._save_game()
                 elif event.key == pygame.K_j:
                     self._interact()
         elif self.state == GameState.COMBAT:
@@ -331,7 +428,10 @@ class Game:
                 if not still_fighting:
                     self._on_combat_end()
                     if self.combat and self.combat.state == CombatState.DEFEAT:
+                        self.darknet_phase = 0
                         self.state = GameState.GAME_OVER
+                    elif self.combat and self.combat.state == CombatState.FLEE:
+                        self.darknet_phase = 0
                     elif self.state != GameState.ENDING:
                         self.state = GameState.EXPLORE
                     self.combat = None
@@ -341,6 +441,12 @@ class Game:
             self._handle_skill_tree_event(event)
         elif self.state == GameState.UPGRADE_SHOP:
             self._handle_upgrade_shop_event(event)
+        elif self.state == GameState.FARM:
+            self._handle_farm_event(event)
+        elif self.state == GameState.PET_MENU:
+            self._handle_pet_menu_event(event)
+        elif self.state == GameState.COOKING:
+            self._handle_cooking_event(event)
         elif self.state == GameState.GAME_OVER:
             if event.type == pygame.KEYDOWN and event.key in (pygame.K_RETURN, pygame.K_j):
                 self._restart()
@@ -372,9 +478,9 @@ class Game:
         if event.key == pygame.K_ESCAPE or event.key == pygame.K_x:
             self.state = GameState.EXPLORE
         elif event.key == pygame.K_UP:
-            self.menu_index = (self.menu_index - 1) % 6
+            self.menu_index = (self.menu_index - 1) % 9
         elif event.key == pygame.K_DOWN:
-            self.menu_index = (self.menu_index + 1) % 6
+            self.menu_index = (self.menu_index + 1) % 9
         elif event.key in (pygame.K_RETURN, pygame.K_j):
             if self.menu_index == 0:  # 物品
                 self.show_inventory = True
@@ -385,12 +491,22 @@ class Game:
                 self.state = GameState.SKILL_TREE
                 self.skill_tree_branch = 0
                 self.skill_tree_tier = 0
-            elif self.menu_index == 3:  # 保存
+            elif self.menu_index == 3:  # 家园
+                self.state = GameState.FARM
+                self.farm_index = 0
+                self.farm_mode = 0
+            elif self.menu_index == 4:  # 宠物
+                self.state = GameState.PET_MENU
+                self.pet_menu_index = 0
+            elif self.menu_index == 5:  # 烹饪
+                self.state = GameState.COOKING
+                self.cooking_index = 0
+            elif self.menu_index == 6:  # 保存
                 self._save_game()
                 self.state = GameState.EXPLORE
-            elif self.menu_index == 4:  # 读取
+            elif self.menu_index == 7:  # 读取
                 self._load_game()
-            elif self.menu_index == 5:  # 返回
+            elif self.menu_index == 8:  # 返回
                 self.state = GameState.EXPLORE
 
     def _interact(self):
@@ -411,8 +527,49 @@ class Game:
         if self.player.area == AREA_FOREST:
             for cx, cy in check_positions:
                 if self.ghost_merchant_npc.x == cx and self.ghost_merchant_npc.y == cy:
+                    # 芯片融合检测
+                    available_fusions = []
+                    for recipe in FUSION_RECIPES:
+                        materials, product_key, product_name = recipe
+                        can_fuse = all(self.player.item_count(k) >= v for k, v in materials.items())
+                        if can_fuse:
+                            available_fusions.append(recipe)
+                    if available_fusions:
+                        # 显示融合选项
+                        mat, prod_key, prod_name = available_fusions[0]
+                        mat_text = '+'.join(f"{ITEMS_DB[k].name}x{v}" for k, v in mat.items())
+                        self.ghost_merchant_npc.dialogues = [
+                            "[!] 我感应到了什么...",
+                            f"你的背包里有可以融合的材料！",
+                            f"融合：{mat_text} → {prod_name}",
+                            "（按J确认融合）",
+                        ]
+                        # 执行融合
+                        for k, v in mat.items():
+                            self.player.remove_item(k, v)
+                        self.player.add_item(prod_key)
+                        item = ITEMS_DB[prod_key]
+                        self.message_queue.append((f"[!] 芯片融合成功！获得{item.name}！", 180))
+                        px = self.player.x + TILE // 2
+                        py = self.player.y + TILE // 2
+                        self.particles.emit(px, py, 25, (180, 60, 255), 3, 50, 4, 'magic')
+                        self.particles.emit(px, py, 15, (0, 255, 200), 2, 40, 3, 'firefly')
                     self.dialogue.start(self.ghost_merchant_npc, self.player.quest_stage)
                     return
+
+        # 暗网守护者入口（黑市特定坐标交互）
+        if (self.player.area == AREA_BLACK_MARKET and not self.player.darknet_cleared
+                and self.player.quest_stage >= 5
+                and self.player.item_count('encrypted_data') >= 3):
+            # 黑市中心区域触发
+            if 10 <= target_tx <= 16 and 10 <= target_ty <= 14:
+                self.player.remove_item('encrypted_data', 3)
+                self.darknet_phase = 1
+                self.message_queue.append(("【暗网守护者】加密数据共鸣...暗网入口开启！", 180))
+                self.message_queue.append(("三连Boss战开始！每场间恢复部分HP/EN。", 120))
+                self.combat = Combat(self.player, 'firewall_guardian', self.assets)
+                self.state = GameState.COMBAT
+                return
 
         # NPC
         for npc in self.npcs:
@@ -420,6 +577,14 @@ class Game:
                 for cx, cy in check_positions:
                     if npc.x == cx and npc.y == cy:
                         self._handle_npc_interact(npc)
+                        return
+
+        # 恋爱NPC
+        for npc in self.romance_npcs:
+            if npc.area == self.player.area:
+                for cx, cy in check_positions:
+                    if npc.x == cx and npc.y == cy:
+                        self._handle_romance_interact(npc)
                         return
 
         # 宝箱
@@ -445,6 +610,23 @@ class Game:
                 py = check_key[2] * TILE + 16
                 self.particles.emit(px, py, 25, (255, 200, 100), 3, 50, 3, 'magic')
                 self.particles.emit(px, py, 15, (0, 255, 200), 2, 40, 2, 'firefly')
+                return
+
+        # 家园：农田交互
+        if self.player.area == AREA_HOME:
+            tile = self.game_map.get_tile(AREA_HOME, target_tx, target_ty)
+            if tile == 21:  # 农田地块
+                self.state = GameState.FARM
+                # 确定是哪块地
+                plot_idx = self._get_farm_plot_index(target_tx, target_ty)
+                if plot_idx is not None:
+                    self.farm_index = plot_idx
+                self.farm_mode = 0
+                return
+            # 宠物管理台（终端机位置）
+            if target_tx == 17 and target_ty == 2:
+                self.state = GameState.PET_MENU
+                self.pet_menu_index = 0
                 return
 
     def _handle_npc_interact(self, npc):
@@ -524,6 +706,377 @@ class Game:
 
         self.dialogue.start(npc, p.quest_stage)
 
+    def _handle_romance_interact(self, npc):
+        """处理恋爱NPC交互"""
+        p = self.player
+        # 找到对应的RomanceChar
+        rc = None
+        for char_id, rchar in ROMANCE_CHARS.items():
+            if rchar.name == npc.name:
+                rc = rchar
+                break
+        if not rc:
+            return
+
+        char_id = rc.char_id
+        aff = p.get_affection(char_id)
+
+        # 已有伴侣且不是这个角色
+        if p.partner and p.partner != char_id:
+            npc.dialogues = ["你已经有伴侣了...祝你们幸福。"]
+            self.dialogue.start(npc, 0)
+            return
+
+        # 已是伴侣 - 显示对话+送礼选项
+        if p.partner == char_id:
+            # 设置对话
+            best_aff = -1
+            best_lines = rc.affection_dialogues.get(0, ["..."])
+            for threshold, lines in sorted(rc.affection_dialogues.items()):
+                if threshold <= p.get_affection(char_id) and threshold > best_aff:
+                    best_aff = threshold
+                    best_lines = lines
+            npc.dialogues = best_lines + ["（按G送礼）"]
+            self.gift_char_id = char_id
+            self.dialogue.start(npc, 0)
+            return
+
+        # 增加好感度（每次交互+5）
+        new_aff = p.add_affection(char_id, 5)
+        if new_aff != aff:
+            self.message_queue.append((f"♥ {rc.name} 好感度 +5 ({new_aff}/100)", 90))
+
+        # 检查剧情事件
+        event = p.check_romance_event(char_id)
+        if event:
+            threshold, desc, reward_type = event
+            p.mark_romance_event(char_id, threshold)
+            self.message_queue.append((f"【剧情】{desc}", 180))
+            # 给奖励
+            if reward_type == 'exp':
+                p.stats.exp += 50
+                self.message_queue.append(("获得 50 EXP！", 90))
+            elif reward_type == 'item':
+                p.add_item('hp_potion', 3)
+                self.message_queue.append(("获得 纳米修复剂 x3！", 90))
+            elif reward_type == 'stat':
+                p.stats.max_hp += 10
+                p.stats.hp += 10
+                self.message_queue.append(("最大HP +10！", 90))
+            elif reward_type == 'skill':
+                p.skill_points += 1
+                self.message_queue.append(("获得 1 技能点！", 90))
+
+        # 好感度达到80，触发告白选择
+        if new_aff >= 80 and not p.partner:
+            self.romance_choice_active = True
+            self.romance_choice_char = char_id
+            self.romance_choice_index = 0
+
+        # 设置对话
+        best_aff = -1
+        best_lines = rc.affection_dialogues.get(0, ["..."])
+        for threshold, lines in sorted(rc.affection_dialogues.items()):
+            if threshold <= new_aff and threshold > best_aff:
+                best_aff = threshold
+                best_lines = lines
+        npc.dialogues = best_lines + ["（按G送礼）"]
+        self.gift_char_id = char_id
+        self.dialogue.start(npc, 0)
+
+    def _handle_gift_input(self, event):
+        """送礼界面输入处理"""
+        giftable = [(k, c) for k, c in self.player.inventory
+                     if ITEMS_DB[k].item_type == 'material']
+        if not giftable:
+            self.gift_mode = False
+            return
+        if event.key in (pygame.K_ESCAPE, pygame.K_x):
+            self.gift_mode = False
+        elif event.key == pygame.K_UP:
+            self.gift_index = (self.gift_index - 1) % len(giftable)
+        elif event.key == pygame.K_DOWN:
+            self.gift_index = (self.gift_index + 1) % len(giftable)
+        elif event.key in (pygame.K_RETURN, pygame.K_j):
+            if self.gift_index < len(giftable):
+                item_key, cnt = giftable[self.gift_index]
+                char_id = self.gift_char_id
+                rc = ROMANCE_CHARS.get(char_id)
+                if rc:
+                    delta, reaction = self.player.gift_to_partner_char(char_id, item_key)
+                    item_name = ITEMS_DB[item_key].name
+                    aff = self.player.get_affection(char_id)
+                    if reaction == 'liked':
+                        self.message_queue.append((f"♥ {rc.name}非常喜欢{item_name}！好感度+{delta} ({aff}/100)", 120))
+                    elif reaction == 'disliked':
+                        self.message_queue.append((f"♥ {rc.name}不太喜欢{item_name}... 好感度{delta} ({aff}/100)", 120))
+                    else:
+                        self.message_queue.append((f"♥ {rc.name}收下了{item_name}。好感度+{delta} ({aff}/100)", 120))
+                    # 检查剧情事件
+                    event_data = self.player.check_romance_event(char_id)
+                    if event_data:
+                        threshold, desc, reward_type = event_data
+                        self.player.mark_romance_event(char_id, threshold)
+                        self.message_queue.append((f"【剧情】{desc}", 180))
+                    # 检查告白
+                    if aff >= 80 and not self.player.partner:
+                        self.romance_choice_active = True
+                        self.romance_choice_char = char_id
+                        self.romance_choice_index = 0
+                self.gift_mode = False
+                self.gift_char_id = None
+
+    def _get_farm_plot_index(self, tx, ty):
+        """根据地图坐标返回菜地索引"""
+        plots_pos = []
+        for i in range(3):
+            for j in range(2):
+                fx = 3 + i * 5
+                fy = 3 + j * 5
+                plots_pos.append((fx, fy))
+                plots_pos.append((fx + 1, fy))
+        # 每块地占2格，6块地
+        for idx in range(6):
+            i, j = idx % 3, idx // 3
+            fx = 3 + i * 5
+            fy = 3 + j * 5
+            if (tx == fx or tx == fx + 1) and ty == fy:
+                return idx
+        return 0
+
+    def _handle_farm_event(self, event):
+        """家园种菜界面"""
+        if event.type != pygame.KEYDOWN:
+            return
+        p = self.player
+        p.init_farm()
+        num_plots = len(p.farm_plots)
+
+        if self.farm_mode == 0:  # 查看模式
+            cols = min(num_plots, 4)
+            if event.key == pygame.K_ESCAPE or event.key == pygame.K_x:
+                self.state = GameState.EXPLORE
+            elif event.key == pygame.K_LEFT:
+                self.farm_index = (self.farm_index - 1) % num_plots
+            elif event.key == pygame.K_RIGHT:
+                self.farm_index = (self.farm_index + 1) % num_plots
+            elif event.key == pygame.K_UP:
+                self.farm_index = (self.farm_index - cols) % num_plots
+            elif event.key == pygame.K_DOWN:
+                self.farm_index = (self.farm_index + cols) % num_plots
+            elif event.key in (pygame.K_RETURN, pygame.K_j):
+                plot = p.farm_plots[self.farm_index]
+                if plot.ready:
+                    # 收获
+                    crop = CROPS_DB[plot.crop_id]
+                    count = crop.harvest_count
+                    # 变异收获：farm_level>=3 有10%概率产出翻倍
+                    mutated = False
+                    if p.farm_level >= 3 and random.random() < 0.1:
+                        count *= 2
+                        mutated = True
+                    p.add_item(crop.harvest_item, count)
+                    msg = f"收获了 {ITEMS_DB[crop.harvest_item].name} x{count}！"
+                    if mutated:
+                        msg += " [变异！产出翻倍！]"
+                        px = SCREEN_W // 2
+                        py = SCREEN_H // 2
+                        self.particles.emit(px, py, 20, (255, 200, 50), 3, 50, 4, 'magic')
+                    self.message_queue.append((msg, 120))
+                    plot.crop_id = None
+                    plot.growth = 0
+                    plot.ready = False
+                    plot.fertilized = False
+                elif plot.crop_id is None:
+                    # 进入种子选择
+                    self.farm_mode = 1
+                    self.farm_seed_index = 0
+            elif event.key == pygame.K_u:
+                # 农场升级
+                upgrade_costs = {0: 300, 1: 600, 2: 1200}
+                cost = upgrade_costs.get(p.farm_level)
+                if cost is None:
+                    self.message_queue.append(("农场已满级！", 90))
+                elif p.stats.gold >= cost:
+                    p.stats.gold -= cost
+                    p.farm_level += 1
+                    p.init_farm()
+                    effects = {1: "+2地块 生长+20%", 2: "+2地块 生长+40%", 3: "+2地块 生长+60% 10%变异"}
+                    self.message_queue.append((f"农场升级到Lv{p.farm_level}！{effects[p.farm_level]} (-{cost}G)", 150))
+                else:
+                    self.message_queue.append((f"信用点不足！需要{cost}G", 90))
+            elif event.key == pygame.K_f:
+                # 施肥
+                plot = p.farm_plots[self.farm_index]
+                if plot.crop_id and not plot.ready and not plot.fertilized:
+                    if p.item_count('fertilizer') > 0:
+                        p.remove_item('fertilizer')
+                        plot.fertilized = True
+                        self.message_queue.append(("施肥成功！生长速度x2！", 120))
+                    else:
+                        self.message_queue.append(("没有纳米肥料！", 90))
+                elif plot.fertilized:
+                    self.message_queue.append(("已经施过肥了！", 90))
+                else:
+                    self.message_queue.append(("需要先种植作物！", 90))
+
+        elif self.farm_mode == 1:  # 选种子
+            seeds = list(CROPS_DB.values())
+            if event.key == pygame.K_ESCAPE or event.key == pygame.K_x:
+                self.farm_mode = 0
+            elif event.key == pygame.K_UP:
+                self.farm_seed_index = (self.farm_seed_index - 1) % len(seeds)
+            elif event.key == pygame.K_DOWN:
+                self.farm_seed_index = (self.farm_seed_index + 1) % len(seeds)
+            elif event.key in (pygame.K_RETURN, pygame.K_j):
+                crop = seeds[self.farm_seed_index]
+                if p.stats.gold >= crop.seed_price:
+                    p.stats.gold -= crop.seed_price
+                    plot = p.farm_plots[self.farm_index]
+                    plot.crop_id = crop.crop_id
+                    plot.growth = 0
+                    plot.ready = False
+                    plot.fertilized = False
+                    self.message_queue.append((f"种下了 {crop.name}！(-{crop.seed_price}G)", 120))
+                    self.farm_mode = 0
+                else:
+                    self.message_queue.append(("信用点不足！", 90))
+
+    def _handle_pet_menu_event(self, event):
+        """宠物管理界面"""
+        if event.type != pygame.KEYDOWN:
+            return
+        p = self.player
+        pets_list = list(PETS_DB.values())
+
+        # 喂食子菜单
+        if self.pet_feed_mode:
+            feedable = [(k, c) for k, c in p.inventory
+                        if k in ('hp_potion', 'mp_potion', 'data_sample', 'quantum_chip')]
+            if not feedable:
+                self.pet_feed_mode = False
+                return
+            if event.key in (pygame.K_ESCAPE, pygame.K_x):
+                self.pet_feed_mode = False
+            elif event.key == pygame.K_UP:
+                self.pet_feed_index = (self.pet_feed_index - 1) % len(feedable)
+            elif event.key == pygame.K_DOWN:
+                self.pet_feed_index = (self.pet_feed_index + 1) % len(feedable)
+            elif event.key in (pygame.K_RETURN, pygame.K_j):
+                if self.pet_feed_index < len(feedable):
+                    item_key, cnt = feedable[self.pet_feed_index]
+                    pet_id = p.pets_owned[self.pet_menu_index]
+                    happiness_map = {'hp_potion': 10, 'mp_potion': 10, 'data_sample': 15, 'quantum_chip': 20}
+                    delta = happiness_map.get(item_key, 5)
+                    cur = p.pet_happiness.get(pet_id, 50)
+                    p.pet_happiness[pet_id] = min(100, cur + delta)
+                    p.remove_item(item_key)
+                    pet = PETS_DB[pet_id]
+                    self.message_queue.append((f"{pet.name}吃了{ITEMS_DB[item_key].name}！幸福度+{delta} ({p.pet_happiness[pet_id]}/100)", 120))
+                    self.pet_feed_mode = False
+            return
+
+        if self.pet_shop_mode:
+            # 宠物商店
+            if event.key == pygame.K_ESCAPE or event.key == pygame.K_x:
+                self.pet_shop_mode = False
+            elif event.key == pygame.K_UP:
+                self.pet_shop_index = (self.pet_shop_index - 1) % len(pets_list)
+            elif event.key == pygame.K_DOWN:
+                self.pet_shop_index = (self.pet_shop_index + 1) % len(pets_list)
+            elif event.key in (pygame.K_RETURN, pygame.K_j):
+                pet = pets_list[self.pet_shop_index]
+                price = 200  # 统一价格
+                if pet.pet_id in p.pets_owned:
+                    self.message_queue.append(("已经拥有这只宠物了！", 90))
+                elif p.stats.gold >= price:
+                    p.stats.gold -= price
+                    p.pets_owned.append(pet.pet_id)
+                    p.pet_happiness[pet.pet_id] = 50
+                    self.message_queue.append((f"获得了 {pet.name}！(-{price}G)", 120))
+                else:
+                    self.message_queue.append(("信用点不足！", 90))
+        else:
+            # 宠物管理
+            if event.key == pygame.K_ESCAPE or event.key == pygame.K_x:
+                self.state = GameState.EXPLORE
+            elif event.key == pygame.K_TAB:
+                self.pet_shop_mode = True
+                self.pet_shop_index = 0
+            elif p.pets_owned:
+                if event.key == pygame.K_UP:
+                    self.pet_menu_index = (self.pet_menu_index - 1) % len(p.pets_owned)
+                elif event.key == pygame.K_DOWN:
+                    self.pet_menu_index = (self.pet_menu_index + 1) % len(p.pets_owned)
+                elif event.key in (pygame.K_RETURN, pygame.K_j):
+                    pet_id = p.pets_owned[self.pet_menu_index]
+                    if p.active_pet == pet_id:
+                        p.active_pet = None
+                        self.message_queue.append(("宠物已收回。", 90))
+                    else:
+                        p.active_pet = pet_id
+                        pet = PETS_DB[pet_id]
+                        evo_name = pet.evolved_name if p.is_pet_evolved(pet_id) else pet.name
+                        self.message_queue.append((f"{evo_name} 出战！", 90))
+                elif event.key == pygame.K_f:
+                    # 喂食
+                    self.pet_feed_mode = True
+                    self.pet_feed_index = 0
+                elif event.key == pygame.K_p:
+                    # 玩耍
+                    pet_id = p.pets_owned[self.pet_menu_index]
+                    cd = p.pet_play_cooldown.get(pet_id, 0)
+                    if cd > 0:
+                        self.message_queue.append((f"玩耍冷却中...还需{cd}步", 90))
+                    else:
+                        cur = p.pet_happiness.get(pet_id, 50)
+                        p.pet_happiness[pet_id] = min(100, cur + 8)
+                        p.pet_play_cooldown[pet_id] = 500
+                        pet = PETS_DB[pet_id]
+                        self.message_queue.append((f"和{pet.name}玩耍了！幸福度+8 ({p.pet_happiness[pet_id]}/100)", 120))
+                        px = SCREEN_W // 2
+                        py = SCREEN_H // 2
+                        self.particles.emit(px, py, 15, (255, 200, 100), 2, 40, 3, 'firefly')
+                elif event.key == pygame.K_e:
+                    # 探险
+                    pet_id = p.pets_owned[self.pet_menu_index]
+                    if p.expedition:
+                        self.message_queue.append(("已有宠物在探险中！", 90))
+                    elif pet_id == p.active_pet:
+                        self.message_queue.append(("出战中的宠物不能探险！", 90))
+                    else:
+                        pet_level = p.get_pet_level(pet_id)
+                        p.expedition = {'pet_id': pet_id, 'steps_left': 1000, 'reward_tier': pet_level}
+                        pet = PETS_DB[pet_id]
+                        self.message_queue.append((f"{pet.name}出发探险了！(1000步后返回)", 120))
+
+    def _handle_cooking_event(self, event):
+        """烹饪界面"""
+        if event.type != pygame.KEYDOWN:
+            return
+        meals = list(MEALS_DB.values())
+        if event.key in (pygame.K_ESCAPE, pygame.K_x):
+            self.state = GameState.MENU
+        elif event.key == pygame.K_UP:
+            self.cooking_index = (self.cooking_index - 1) % len(meals)
+        elif event.key == pygame.K_DOWN:
+            self.cooking_index = (self.cooking_index + 1) % len(meals)
+        elif event.key in (pygame.K_RETURN, pygame.K_j):
+            meal = meals[self.cooking_index]
+            # 检查材料
+            can_cook = all(self.player.item_count(k) >= v for k, v in meal.materials.items())
+            if not can_cook:
+                self.message_queue.append(("材料不足！", 90))
+            else:
+                for k, v in meal.materials.items():
+                    self.player.remove_item(k, v)
+                self.player.active_meal = meal.meal_id
+                self.player.meal_buff_turns = meal.buff_turns
+                buff_desc = {'atk': f'ATK+{meal.buff_value}', 'def': f'DEF+{meal.buff_value}',
+                             'hp_regen': f'HP回复{meal.buff_value}/回合', 'all': f'全属性+{meal.buff_value}',
+                             'atk_def': f'ATK+{meal.buff_value} DEF+5'}
+                self.message_queue.append((f"烹饪了{meal.name}！{buff_desc.get(meal.buff_type, '')} {meal.buff_turns}回合", 150))
+
     def _check_boss_trigger(self):
         """检查是否踩到Boss触发点"""
         p = self.player
@@ -574,6 +1127,42 @@ class Game:
                 cnt = p.quest_counters['merc_hunt']
                 if cnt <= 10:
                     self.message_queue.append((f"佣兵委托进度: {cnt}/10", 60))
+            # 数据囤积者成就检查（购买/拾取后也可能触发，这里兜底）
+            if len(p.inventory) >= 15 and 'data_hoarder' not in p.achievements:
+                p.achievements.add('data_hoarder')
+                self.message_queue.append(("【成就解锁：数据囤积者！商店价格-20%】", 180))
+
+        # 暗网连战链式触发
+        if self.combat.state == CombatState.VICTORY and self.darknet_phase > 0:
+            darknet_chain = ['firewall_guardian', 'data_devourer', 'darknet_lord']
+            if self.darknet_phase <= len(darknet_chain):
+                boss_key = self.combat.enemy_key
+                if self.darknet_phase < len(darknet_chain):
+                    next_boss = darknet_chain[self.darknet_phase]
+                    self.darknet_phase += 1
+                    # 恢复部分HP/EN
+                    p.stats.hp = min(p.stats.max_hp, p.stats.hp + p.stats.max_hp // 3)
+                    p.stats.mp = min(p.stats.max_mp, p.stats.mp + p.stats.max_mp // 3)
+                    self.message_queue.append((f"恢复了部分HP和EN...下一个对手来了！", 120))
+                    self.combat = Combat(p, next_boss, self.assets)
+                    self.state = GameState.COMBAT
+                    self.message_queue.append((f"【暗网守护者】{ENEMY_DEFS[next_boss].name}出现了！", 120))
+                    return
+                else:
+                    # 全部击败
+                    self.darknet_phase = 0
+                    p.darknet_cleared = True
+                    p.add_item('quantum_blade')
+                    p.stats.exp += 1000
+                    p.stats.gold += 800
+                    if 'darknet_conqueror' not in p.achievements:
+                        p.achievements.add('darknet_conqueror')
+                    self.message_queue.append(("【暗网征服】获得量子之刃+1000EXP+800信用点！", 180))
+                    self.message_queue.append(("【成就解锁：暗网征服者！ATK+5 DEF+5】", 180))
+                    px = self.player.x + TILE // 2
+                    py = self.player.y + TILE // 2
+                    self.particles.emit(px, py, 40, (180, 60, 255), 4, 60, 5, 'magic')
+                    self.particles.emit(px, py, 30, (0, 255, 200), 3, 50, 4, 'magic')
 
     def _update(self):
         self.tick += 1
@@ -684,6 +1273,18 @@ class Game:
                     self.player.tx = tx
                     self.player.ty = ty
                     self.encounter_steps = 0
+                    # 区域访问记录（成就：全域探索者）
+                    self.player.visited_areas.add(target_area)
+                    all_areas = {AREA_VILLAGE, AREA_FOREST, AREA_DUNGEON, AREA_NEON_STREET,
+                                 AREA_FACTORY, AREA_CYBERSPACE, AREA_TUNNEL, AREA_BLACK_MARKET,
+                                 AREA_HOME, AREA_HOUSE_V1, AREA_HOUSE_N1}
+                    if (len(self.player.visited_areas & all_areas) >= 11
+                            and 'completionist' not in self.player.achievements):
+                        self.player.achievements.add('completionist')
+                        self.message_queue.append(("【成就解锁：全域探索者！全属性+3】", 180))
+                        px = self.player.x + TILE // 2
+                        py = self.player.y + TILE // 2
+                        self.particles.emit(px, py, 30, (255, 200, 100), 3, 50, 4, 'magic')
                     # 进入森林时重新随机幽灵商人位置
                     if target_area == AREA_FOREST:
                         self.ghost_merchant_pos = self._random_walkable_tile(AREA_FOREST)
@@ -695,7 +1296,14 @@ class Game:
                 self.encounter_steps += 1
                 encounter_list = ENCOUNTER_TABLE.get(self.player.area, [])
                 if encounter_list and self.encounter_steps > 30:
-                    if random.random() < 0.004:
+                    # 遇敌概率随等级微调：低等级少遇敌，高等级略多
+                    base_rate = 0.004
+                    level = self.player.stats.level
+                    rate = base_rate * (0.7 + min(level, 10) * 0.06)
+                    # 成就：幽灵协议 遇敌率-30%
+                    if 'ghost_protocol' in self.player.achievements:
+                        rate *= 0.7
+                    if random.random() < rate:
                         # 1% 概率遇到金色史莱姆
                         if random.random() < 0.01:
                             enemy = 'golden_slime'
@@ -712,6 +1320,84 @@ class Game:
             if self.random_event_steps > 50 and random.random() < 0.003:
                 self.random_event_steps = 0
                 self._trigger_random_event()
+
+            # 家园作物生长
+            self.player.farm_tick()
+
+            # 宠物幸福度衰减 + 玩耍冷却 + 探险
+            if self.tick % 60 == 0:  # 约每秒检查一次
+                p = self.player
+                # 幸福度衰减：每200步-1
+                for pet_id in p.pets_owned:
+                    # 用 tick 近似步数
+                    if self.tick % (60 * 10) == 0:  # 约每10秒
+                        cur = p.pet_happiness.get(pet_id, 50)
+                        if cur > 0:
+                            p.pet_happiness[pet_id] = cur - 1
+                # 玩耍冷却递减
+                for pet_id in list(p.pet_play_cooldown.keys()):
+                    if p.pet_play_cooldown[pet_id] > 0:
+                        p.pet_play_cooldown[pet_id] -= 1
+                # 探险步数递减
+                if p.expedition:
+                    p.expedition['steps_left'] -= 1
+                    if p.expedition['steps_left'] <= 0:
+                        self._complete_expedition()
+
+            # 宠物HP回复（探索中）
+            pet_bonus = self.player.get_pet_bonuses()
+            if pet_bonus.get('type') == 'hp_regen' and self.tick % 60 == 0:
+                self.player.stats.hp = min(self.player.stats.max_hp,
+                                           self.player.stats.hp + pet_bonus['value'])
+
+            # 伴侣随机探索对话
+            if self.player.partner:
+                self.partner_dialogue_timer += 1
+                if self.partner_dialogue_timer > 300 and random.random() < 0.005:
+                    self.partner_dialogue_timer = 0
+                    rc = ROMANCE_CHARS.get(self.player.partner)
+                    if rc and rc.explore_dialogues:
+                        line = random.choice(rc.explore_dialogues)
+                        self.message_queue.append((f"♥ {rc.name}：{line}", 150))
+
+    def _complete_expedition(self):
+        """探险完成，发放奖励"""
+        p = self.player
+        exp = p.expedition
+        if not exp:
+            return
+        pet_id = exp['pet_id']
+        tier = exp['reward_tier']
+        pet = PETS_DB.get(pet_id)
+        pet_name = pet.name if pet else pet_id
+
+        rewards = []
+        if tier <= 2:
+            item = random.choice(['hp_potion', 'mp_potion'])
+            count = random.randint(1, 2)
+            gold = random.randint(20, 50)
+        elif tier <= 4:
+            item = random.choice(['data_sample', 'precision_gear'])
+            count = 1
+            gold = random.randint(50, 100)
+        else:
+            item = random.choice(['quantum_chip', 'encrypted_data'])
+            count = 1
+            gold = random.randint(100, 200)
+            # 稀有物品概率
+            if random.random() < 0.3:
+                p.add_item('elixir')
+                rewards.append('系统重启')
+
+        p.add_item(item, count)
+        p.stats.gold += gold
+        rewards.insert(0, f"{ITEMS_DB[item].name}x{count} +{gold}G")
+        reward_text = ' '.join(rewards)
+        self.message_queue.append((f"{pet_name}探险归来！获得{reward_text}", 180))
+        px = SCREEN_W // 2
+        py = SCREEN_H // 2
+        self.particles.emit(px, py, 20, (0, 255, 200), 3, 50, 4, 'magic')
+        p.expedition = None
 
     def _trigger_random_event(self):
         """走路时小概率触发的随机事件"""
@@ -896,6 +1582,7 @@ class Game:
             'hidden_chests': {f"{a},{x},{y}": list(v) for (a, x, y), v in self.hidden_chests.items()},
             'hidden_chests_opened': [list(c) for c in self.hidden_chests_opened],
             'ghost_merchant_pos': list(self.ghost_merchant_pos),
+            'darknet_phase': self.darknet_phase,
         }
         try:
             with open(SAVE_PATH, 'w', encoding='utf-8') as f:
@@ -930,6 +1617,7 @@ class Game:
             self.combat = None
             self.encounter_steps = 0
             self.random_event_steps = 0
+            self.darknet_phase = data.get('darknet_phase', 0)
             self.state = GameState.EXPLORE
             self.show_inventory = False
             # 重置相机到玩家位置
@@ -959,45 +1647,58 @@ class Game:
             self._draw_skill_tree()
         elif self.state == GameState.UPGRADE_SHOP:
             self._draw_upgrade_shop()
+        elif self.state == GameState.FARM:
+            self._draw_farm()
+        elif self.state == GameState.PET_MENU:
+            self._draw_pet_menu()
+        elif self.state == GameState.COOKING:
+            self._draw_cooking()
         elif self.state == GameState.GAME_OVER:
             self._draw_game_over()
         elif self.state == GameState.ENDING:
             self._draw_ending()
 
-    def _draw_title(self):
-        # 赛博朋克渐变天空
+    def _prerender_title_bg(self):
+        """预渲染标题画面静态背景"""
+        import math
+        surf = pygame.Surface((SCREEN_W, SCREEN_H))
+        # 渐变背景
         for y in range(SCREEN_H):
             t = y / SCREEN_H
             r = int(lerp(5, 15, t))
-            g = int(lerp(5, 10, t))
+            g = int(lerp(2, 10, t))
             b = int(lerp(20, 50, t))
-            pygame.draw.line(self.screen, (r, g, b), (0, y), (SCREEN_W, y))
-
-        # 数据雨
-        random.seed(42)
-        for _ in range(120):
-            sx = random.randint(0, SCREEN_W)
-            sy = random.randint(0, SCREEN_H // 2)
-            speed = random.randint(1, 3)
-            animated_y = (sy + self.tick * speed) % (SCREEN_H // 2)
-            c = random.choice([(0, 180, 150), (0, 255, 200), (0, 120, 100)])
-            fade = max(30, 255 - animated_y * 2)
-            self.screen.set_at((sx, animated_y), (c[0]*fade//255, c[1]*fade//255, c[2]*fade//255))
-        random.seed()
-
+            pygame.draw.line(surf, (r, g, b), (0, y), (SCREEN_W, y))
         # 城市天际线
         for x in range(SCREEN_W):
             h = int(60 + math.sin(x * 0.015) * 30 + math.sin(x * 0.05) * 15)
             if x % 40 < 20:
                 h += 30
-            pygame.draw.line(self.screen, (15, 18, 35), (x, SCREEN_H - h), (x, SCREEN_H))
+            pygame.draw.line(surf, (15, 18, 35), (x, SCREEN_H - h), (x, SCREEN_H))
         # 霓虹窗户
         random.seed(99)
         for _ in range(60):
             wx = random.randint(0, SCREEN_W)
             wy = random.randint(SCREEN_H - 120, SCREEN_H - 20)
             c = random.choice([(0, 200, 180), (255, 50, 150), (180, 60, 255), (0, 255, 100)])
-            pygame.draw.rect(self.screen, c, (wx, wy, 3, 2))
+            pygame.draw.rect(surf, c, (wx, wy, 3, 2))
+        random.seed()
+        return surf
+
+    def _draw_title(self):
+        self.screen.blit(self._title_bg, (0, 0))
+
+        # 数据雨（动画）
+        random.seed(42)
+        for _ in range(60):
+            sx = random.randint(0, SCREEN_W)
+            sy = random.randint(0, SCREEN_H // 2)
+            speed = random.randint(1, 3)
+            animated_y = (sy + self.tick * speed) % (SCREEN_H // 2)
+            c = random.choice([(0, 180, 150), (0, 255, 200), (0, 120, 100)])
+            fade = max(30, 255 - animated_y * 2)
+            fc = (c[0]*fade//255, c[1]*fade//255, c[2]*fade//255)
+            pygame.draw.line(self.screen, fc, (sx, animated_y), (sx, animated_y + 2))
         random.seed()
 
         # 标题
@@ -1043,60 +1744,17 @@ class Game:
                 sy = ty * TILE - cam_y
                 tile = self.game_map.get_tile(area, tx, ty)
 
-                if tile == 0:  # 金属地板
+                if tile == 0:  # 金属地板变体
                     key = 'grass2' if (tx + ty) % 3 == 0 else 'grass'
                     self.screen.blit(self.assets.tiles[key], (sx, sy))
-                elif tile == 1:  # 霓虹步道
-                    self.screen.blit(self.assets.tiles['path'], (sx, sy))
-                elif tile == 2:  # 数据流
+                elif tile == 2:  # 数据流（动画）
                     self.screen.blit(self.assets.tiles[f'water_{water_frame}'], (sx, sy))
-                    # 数据流闪光
-                    if self.tick % 30 < 15 and random.random() < 0.02:
-                        self.screen.set_at((sx + random.randint(0, TILE-1), sy + random.randint(0, TILE//2)),
-                                           (0, 255, 220))
-                elif tile == 3:  # 金属墙
-                    self.screen.blit(self.assets.tiles['wall'], (sx, sy))
-                elif tile == 4:  # 信号塔
-                    self.screen.blit(self.assets.tiles['grass'], (sx, sy))
-                    self.screen.blit(self.assets.tiles['tree'], (sx, sy))
-                elif tile == 5:  # 电路板地板
-                    self.screen.blit(self.assets.tiles['dungeon_floor'], (sx, sy))
-                elif tile == 6:  # 霓虹灯
-                    self.screen.blit(self.assets.tiles['grass'], (sx, sy))
-                    self.screen.blit(self.assets.tiles['flower'], (sx, sy))
-                elif tile == 7:  # 传送门
-                    self.screen.blit(self.assets.tiles['door'], (sx, sy))
-                elif tile == 8:  # 工厂地板
-                    self.screen.blit(self.assets.tiles['factory_floor'], (sx, sy))
-                elif tile == 9:  # 网络地板
-                    self.screen.blit(self.assets.tiles['cyber_floor'], (sx, sy))
-                elif tile == 10:  # 霓虹地砖
-                    self.screen.blit(self.assets.tiles['neon_tile'], (sx, sy))
-                elif tile == 11:  # 室内地板
-                    self.screen.blit(self.assets.tiles['indoor_floor'], (sx, sy))
-                elif tile == 12:  # 室内墙
-                    self.screen.blit(self.assets.tiles['indoor_wall'], (sx, sy))
-                elif tile == 13:  # 桌子
-                    self.screen.blit(self.assets.tiles['indoor_floor'], (sx, sy))
-                    self.screen.blit(self.assets.tiles['table'], (sx, sy))
-                elif tile == 14:  # 终端机
-                    self.screen.blit(self.assets.tiles['indoor_floor'], (sx, sy))
-                    self.screen.blit(self.assets.tiles['terminal'], (sx, sy))
-                elif tile == 15:  # 书架
-                    self.screen.blit(self.assets.tiles['indoor_floor'], (sx, sy))
-                    self.screen.blit(self.assets.tiles['bookshelf'], (sx, sy))
-                elif tile == 16:  # 沙发
-                    self.screen.blit(self.assets.tiles['indoor_floor'], (sx, sy))
-                    self.screen.blit(self.assets.tiles['sofa'], (sx, sy))
-                elif tile == 17:  # 地毯
-                    self.screen.blit(self.assets.tiles['carpet'], (sx, sy))
-                elif tile == 18:  # 吧台
-                    self.screen.blit(self.assets.tiles['indoor_floor'], (sx, sy))
-                    self.screen.blit(self.assets.tiles['bar_counter'], (sx, sy))
-                elif tile == 19:  # 管道地板
-                    self.screen.blit(self.assets.tiles['pipe_floor'], (sx, sy))
-                elif tile == 20:  # 锈蚀墙
-                    self.screen.blit(self.assets.tiles['rust_wall'], (sx, sy))
+                else:
+                    entry = self._tile_map.get(tile)
+                    if entry:
+                        self.screen.blit(self.assets.tiles[entry[0]], (sx, sy))
+                        if entry[1]:
+                            self.screen.blit(self.assets.tiles[entry[1]], (sx, sy))
 
         # 宝箱
         for (a, cx, cy), (item_key, cnt) in self.chest_positions.items():
@@ -1173,6 +1831,44 @@ class Game:
                             draw_text(self.screen, "[J]", (sx + TILE//2, by_hint + 1),
                                       self.assets.font_sm, (200, 160, 255), center=True)
 
+        # 恋爱NPC（带心形标记）
+        for npc in self.romance_npcs:
+            if npc.area == area:
+                sx = npc.x * TILE - cam_x
+                sy = npc.y * TILE - cam_y
+                sprite = self.assets.npc_sprites.get(npc.sprite_key)
+                if sprite:
+                    bob = int(math.sin(self.tick * 0.05 + npc.x * 3) * 2)
+                    self.screen.blit(sprite, (sx, sy + bob))
+                    # 名字（粉色）
+                    draw_text(self.screen, npc.name, (sx + TILE//2, sy - 8),
+                              self.assets.font_sm, C_NEON_PINK, center=True)
+                    # 好感度心形
+                    rc = None
+                    for cid, rchar in ROMANCE_CHARS.items():
+                        if rchar.name == npc.name:
+                            rc = rchar
+                            break
+                    if rc:
+                        aff = self.player.get_affection(rc.char_id)
+                        if aff > 0:
+                            hearts = min(5, aff // 20 + 1)
+                            heart_str = "♥" * hearts
+                            draw_text(self.screen, heart_str, (sx + TILE//2, sy - 20),
+                                      self.assets.font_sm, (255, 80, 120), center=True)
+                    # 交互提示
+                    dist = abs(self.player.tx - npc.x) + abs(self.player.ty - npc.y)
+                    if dist <= 2:
+                        if (self.tick // 20) % 2:
+                            bw_hint = self.assets.font_sm.size("[J]")[0] + 8
+                            bh_hint = 18
+                            bx_hint = sx + TILE//2 - bw_hint//2
+                            by_hint = sy - 30
+                            pygame.draw.rect(self.screen, (50, 20, 30), (bx_hint, by_hint, bw_hint, bh_hint), border_radius=4)
+                            pygame.draw.rect(self.screen, (255, 100, 150), (bx_hint, by_hint, bw_hint, bh_hint), 1, border_radius=4)
+                            draw_text(self.screen, "[J]", (sx + TILE//2, by_hint + 1),
+                                      self.assets.font_sm, (255, 150, 180), center=True)
+
         # 玩家
         frames = self.assets.player_frames.get(self.player.direction, [])
         if frames:
@@ -1204,11 +1900,59 @@ class Game:
         if self.encounter_steps < 60:
             area_names = {AREA_VILLAGE: "数据港", AREA_FOREST: "废墟荒地", AREA_DUNGEON: "旧数据中心",
                           AREA_NEON_STREET: "霓虹商业街", AREA_FACTORY: "废弃工厂", AREA_CYBERSPACE: "网络空间",
-                          AREA_TUNNEL: "地下通道", AREA_BLACK_MARKET: "黑市"}
+                          AREA_TUNNEL: "地下通道", AREA_BLACK_MARKET: "黑市", AREA_HOME: "家园"}
             name = area_names.get(area, "")
             alpha = max(0, 60 - self.encounter_steps) / 60
             c = tuple(int(255 * alpha) for _ in range(3))
             draw_text(self.screen, name, (SCREEN_W//2, 50), self.assets.font_lg, c, center=True)
+
+        # 送礼界面覆盖层
+        if self.gift_mode and self.gift_char_id:
+            rc = ROMANCE_CHARS.get(self.gift_char_id)
+            giftable = [(k, c) for k, c in self.player.inventory
+                         if ITEMS_DB[k].item_type == 'material']
+            if rc and giftable:
+                overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+                overlay.fill((0, 0, 0, 160))
+                self.screen.blit(overlay, (0, 0))
+                bw, bh = 320, 40 + len(giftable) * 26 + 30
+                bx = SCREEN_W // 2 - bw // 2
+                by = SCREEN_H // 2 - bh // 2
+                draw_pixel_rect(self.screen, (20, 10, 30), (bx, by, bw, bh), 2, (255, 80, 150))
+                draw_text(self.screen, f"送礼给{rc.name} (X返回)", (SCREEN_W//2, by + 12),
+                          self.assets.font_md, C_NEON_PINK, center=True)
+                for i, (key, cnt) in enumerate(giftable):
+                    item = ITEMS_DB[key]
+                    color = C_YELLOW if i == self.gift_index else C_WHITE
+                    prefix = ">> " if i == self.gift_index else "   "
+                    draw_text(self.screen, f"{prefix}{item.name} x{cnt}",
+                              (bx + 30, by + 40 + i * 26), self.assets.font_sm, color)
+
+        # 恋爱告白选择覆盖层
+        if self.romance_choice_active and self.romance_choice_char:
+            rc = ROMANCE_CHARS.get(self.romance_choice_char)
+            if rc:
+                # 半透明背景
+                overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+                overlay.fill((0, 0, 0, 160))
+                self.screen.blit(overlay, (0, 0))
+                # 选择框
+                bw, bh = 360, 160
+                bx = SCREEN_W // 2 - bw // 2
+                by = SCREEN_H // 2 - bh // 2
+                draw_pixel_rect(self.screen, (20, 10, 30), (bx, by, bw, bh), (255, 80, 150))
+                draw_text(self.screen, f"♥ {rc.name}向你告白了 ♥", (SCREEN_W//2, by + 20),
+                          self.assets.font_md, (255, 150, 200), center=True)
+                draw_text(self.screen, "接受后将成为你的伴侣并加入队伍", (SCREEN_W//2, by + 50),
+                          self.assets.font_sm, C_WHITE, center=True)
+                draw_text(self.screen, "（注意：只能选择一位伴侣！）", (SCREEN_W//2, by + 70),
+                          self.assets.font_sm, (255, 200, 100), center=True)
+                options = ["接受", "再想想"]
+                for i, opt in enumerate(options):
+                    color = C_NEON_PINK if i == self.romance_choice_index else C_WHITE
+                    prefix = ">> " if i == self.romance_choice_index else "   "
+                    draw_text(self.screen, prefix + opt, (SCREEN_W//2, by + 105 + i * 30),
+                              self.assets.font_md, color, center=True)
 
     def _draw_sky(self, area):
         if area == AREA_VILLAGE:
@@ -1239,6 +1983,10 @@ class Game:
             # 黑市 - 深紫
             top = (8, 3, 15)
             bot = (15, 8, 28)
+        elif area == AREA_HOME:
+            # 家园 - 暖色调
+            top = (15, 12, 8)
+            bot = (25, 20, 15)
         else:
             # 旧数据中心
             top = (8, 5, 15)
@@ -1324,6 +2072,10 @@ class Game:
                     c = (25, 22, 18, 180)
                 elif tile == 20:
                     c = (40, 30, 22, 180)
+                elif tile == 21:
+                    c = (50, 35, 15, 180)
+                elif tile == 22:
+                    c = (60, 50, 35, 180)
                 else:
                     c = (15, 15, 25, 180)
                 pygame.draw.rect(mm_surf, c, (px, py, pw, ph))
@@ -1384,11 +2136,42 @@ class Game:
             draw_text(self.screen, f"{label}: {name}", (px + 30, ey), self.assets.font_sm)
             ey += 20
 
+        # 伴侣信息
+        if self.player.partner:
+            rc = ROMANCE_CHARS.get(self.player.partner)
+            if rc:
+                stats = self.player.get_partner_combat_stats()
+                p_hp, p_atk, p_def = stats if stats else (rc.combat_hp, rc.combat_atk, rc.combat_def)
+                aff = self.player.get_affection(self.player.partner)
+                exp_next = self.player.partner_level * 40
+                draw_text(self.screen, f"伴侣: {rc.name} Lv{self.player.partner_level}",
+                          (px + 20, ey + 5), self.assets.font_sm, C_NEON_PINK)
+                ey += 18
+                draw_text(self.screen, f"  HP:{self.player.partner_hp}/{p_hp} ATK:{p_atk} DEF:{p_def}",
+                          (px + 20, ey + 5), self.assets.font_sm, (200, 150, 170))
+                ey += 18
+                draw_text(self.screen, f"  EXP:{self.player.partner_exp}/{exp_next} 好感:{aff}/100",
+                          (px + 20, ey + 5), self.assets.font_sm, (200, 150, 170))
+                ey += 18
+                skills = self.player.get_partner_skills()
+                skill_names = ", ".join(n for n, _, _ in skills)
+                draw_text(self.screen, f"  技能: {skill_names}",
+                          (px + 20, ey + 5), self.assets.font_sm, (180, 140, 160))
+                ey += 20
+
+        # 宠物信息
+        if self.player.active_pet:
+            pet = PETS_DB.get(self.player.active_pet)
+            if pet:
+                draw_text(self.screen, f"宠物: {pet.name}", (px + 20, ey + 5), self.assets.font_sm, C_NEON_CYAN)
+                ey += 20
+
         # 菜单选项
         if self.show_inventory:
             self._draw_inventory_panel(px + 20, info_y + 220, pw - 40)
         else:
-            options = ["[I] 物品", "[S] 状态", "[T] 技能树", "[W] 保存", "[L] 读取", "[Q] 返回"]
+            options = ["[I] 物品", "[S] 状态", "[T] 技能树", "[F] 家园", "[P] 宠物",
+                       "[C] 烹饪", "[W] 保存", "[L] 读取", "[Q] 返回"]
             for i, opt in enumerate(options):
                 color = C_YELLOW if i == self.menu_index else C_WHITE
                 prefix = ">> " if i == self.menu_index else "   "
@@ -1418,6 +2201,273 @@ class Game:
                           self.assets.font_sm, (180, 180, 200))
                 draw_text(self.screen, "J: 使用/装备", (x + 10, y + 24 + len(items) * 26 + 30),
                           self.assets.font_sm, (150, 150, 170))
+
+    def _draw_farm(self):
+        """家园种菜界面"""
+        self.screen.fill((10, 15, 10))
+        p = self.player
+        p.init_farm()
+        num_plots = len(p.farm_plots)
+        cols = min(num_plots, 4)
+        rows = (num_plots + cols - 1) // cols
+
+        draw_text(self.screen, f"【家园 - 农场 Lv{p.farm_level}】", (SCREEN_W//2, 20), self.assets.font_lg, C_GOLD, center=True)
+        draw_text(self.screen, f"信用点: {p.stats.gold}", (SCREEN_W - 120, 20), self.assets.font_sm, C_GOLD)
+
+        plot_w, plot_h = 110, 90
+        start_x = (SCREEN_W - cols * (plot_w + 10)) // 2
+        start_y = 60
+
+        for idx in range(num_plots):
+            col, row = idx % cols, idx // cols
+            bx = start_x + col * (plot_w + 10)
+            by = start_y + row * (plot_h + 10)
+
+            selected = idx == self.farm_index
+            border_color = C_NEON_CYAN if selected else (60, 60, 60)
+            bg_color = (20, 30, 20) if not selected else (30, 45, 30)
+            draw_pixel_rect(self.screen, bg_color, (bx, by, plot_w, plot_h), 2, border_color)
+
+            plot = p.farm_plots[idx]
+            if plot.crop_id:
+                crop = CROPS_DB.get(plot.crop_id)
+                if crop:
+                    name_text = crop.name
+                    if plot.fertilized:
+                        name_text += " [肥]"
+                    draw_text(self.screen, name_text, (bx + plot_w//2, by + 5),
+                              self.assets.font_sm, C_WHITE, center=True)
+                    if plot.ready:
+                        draw_text(self.screen, "✓ 可收获!", (bx + plot_w//2, by + 28),
+                                  self.assets.font_sm, C_GREEN, center=True)
+                    else:
+                        pct = plot.growth / crop.grow_time if crop.grow_time > 0 else 0
+                        draw_bar(self.screen, bx + 8, by + 32, plot_w - 16, 8, min(1.0, pct), (80, 200, 80))
+                        draw_text(self.screen, f"{int(min(100, pct*100))}%", (bx + plot_w//2, by + 45),
+                                  self.assets.font_sm, (150, 200, 150), center=True)
+                    item = ITEMS_DB.get(crop.harvest_item)
+                    if item:
+                        draw_text(self.screen, f"→ {item.name} x{crop.harvest_count}", (bx + plot_w//2, by + 65),
+                                  self.assets.font_sm, (120, 150, 120), center=True)
+            else:
+                draw_text(self.screen, "空地", (bx + plot_w//2, by + 25),
+                          self.assets.font_sm, (80, 80, 80), center=True)
+                draw_text(self.screen, "[J] 种植", (bx + plot_w//2, by + 50),
+                          self.assets.font_sm, (100, 100, 100), center=True)
+
+        # 种子选择面板
+        if self.farm_mode == 1:
+            sw, sh = 300, 240
+            sx = SCREEN_W // 2 - sw // 2
+            sy = SCREEN_H // 2 - sh // 2
+            draw_pixel_rect(self.screen, (15, 20, 15), (sx, sy, sw, sh), 2, C_NEON_CYAN)
+            draw_text(self.screen, "【选择种子】", (sx + sw//2, sy + 10), self.assets.font_md, C_GOLD, center=True)
+            seeds = list(CROPS_DB.values())
+            for i, crop in enumerate(seeds):
+                color = C_YELLOW if i == self.farm_seed_index else C_WHITE
+                prefix = ">> " if i == self.farm_seed_index else "   "
+                draw_text(self.screen, f"{prefix}{crop.name} ({crop.seed_price}G)",
+                          (sx + 20, sy + 40 + i * 26), self.assets.font_sm, color)
+            # 选中种子的详情
+            if self.farm_seed_index < len(seeds):
+                sel = seeds[self.farm_seed_index]
+                item = ITEMS_DB.get(sel.harvest_item)
+                info = f"收获: {item.name if item else '?'} x{sel.harvest_count}"
+                draw_text(self.screen, info, (sx + 20, sy + sh - 30), self.assets.font_sm, (150, 200, 150))
+
+        # 升级信息
+        upgrade_costs = {0: 300, 1: 600, 2: 1200}
+        cost = upgrade_costs.get(p.farm_level)
+        if cost:
+            draw_text(self.screen, f"[U] 升级农场 ({cost}G)", (20, SCREEN_H - 80), self.assets.font_sm, (100, 200, 150))
+
+        # 操作提示
+        draw_text(self.screen, "方向键选择  J:种植/收获  F:施肥  U:升级  X:返回", (SCREEN_W//2, SCREEN_H - 30),
+                  self.assets.font_sm, (100, 120, 100), center=True)
+
+        # 消息
+        if self.message_queue:
+            msg, timer = self.message_queue[0]
+            draw_text(self.screen, msg, (SCREEN_W//2, SCREEN_H - 60), self.assets.font_md, C_GOLD, center=True)
+
+    def _draw_pet_menu(self):
+        """宠物管理界面"""
+        self.screen.fill((10, 10, 20))
+        p = self.player
+
+        draw_text(self.screen, "【宠物管理】", (SCREEN_W//2, 20), self.assets.font_lg, C_NEON_CYAN, center=True)
+        draw_text(self.screen, f"信用点: {p.stats.gold}", (SCREEN_W - 120, 20), self.assets.font_sm, C_GOLD)
+
+        if self.pet_shop_mode:
+            # 宠物商店
+            draw_text(self.screen, "【宠物商店】(X返回)", (SCREEN_W//2, 60), self.assets.font_md, C_GOLD, center=True)
+            pets_list = list(PETS_DB.values())
+            for i, pet in enumerate(pets_list):
+                color = C_YELLOW if i == self.pet_shop_index else C_WHITE
+                owned = pet.pet_id in p.pets_owned
+                prefix = ">> " if i == self.pet_shop_index else "   "
+                status = " [已拥有]" if owned else f" (200G)"
+                draw_text(self.screen, f"{prefix}{pet.name}{status}",
+                          (80, 100 + i * 50), self.assets.font_md, color)
+                draw_text(self.screen, pet.description, (100, 125 + i * 50), self.assets.font_sm, (140, 140, 160))
+                # 被动效果
+                passive = pet.passive
+                eff_text = ""
+                if passive.get('type') == 'hp_regen': eff_text = f"被动: 每秒回复{passive['value']}HP"
+                elif passive.get('type') == 'gold_boost': eff_text = f"被动: 金币+{passive['value']}%"
+                elif passive.get('type') == 'exp_boost': eff_text = f"被动: 经验+{passive['value']}%"
+                elif passive.get('type') == 'atk_boost': eff_text = f"被动: ATK+{passive['value']}"
+                elif passive.get('type') == 'def_boost': eff_text = f"被动: DEF+{passive['value']}"
+                draw_text(self.screen, eff_text, (100, 140 + i * 50), self.assets.font_sm, C_NEON_CYAN)
+                # 精灵
+                sprite = self.assets.npc_sprites.get(pet.sprite_key)
+                if sprite:
+                    self.screen.blit(sprite, (50, 100 + i * 50))
+        elif self.pet_feed_mode and p.pets_owned:
+            # 喂食子菜单
+            pet_id = p.pets_owned[self.pet_menu_index]
+            pet = PETS_DB.get(pet_id)
+            pet_name = pet.evolved_name if pet and p.is_pet_evolved(pet_id) else (pet.name if pet else pet_id)
+            draw_text(self.screen, f"喂食 {pet_name} (X返回)", (SCREEN_W//2, 60), self.assets.font_md, C_GOLD, center=True)
+            feedable = [(k, c) for k, c in p.inventory
+                        if k in ('hp_potion', 'mp_potion', 'data_sample', 'quantum_chip')]
+            if not feedable:
+                draw_text(self.screen, "没有可喂食的物品！", (SCREEN_W//2, 120), self.assets.font_md, (150, 150, 150), center=True)
+            else:
+                happiness_map = {'hp_potion': 10, 'mp_potion': 10, 'data_sample': 15, 'quantum_chip': 20}
+                for i, (key, cnt) in enumerate(feedable):
+                    color = C_YELLOW if i == self.pet_feed_index else C_WHITE
+                    prefix = ">> " if i == self.pet_feed_index else "   "
+                    delta = happiness_map.get(key, 5)
+                    draw_text(self.screen, f"{prefix}{ITEMS_DB[key].name} x{cnt} (幸福度+{delta})",
+                              (80, 100 + i * 28), self.assets.font_sm, color)
+        else:
+            # 我的宠物
+            if not p.pets_owned:
+                draw_text(self.screen, "还没有宠物。按TAB打开宠物商店。", (SCREEN_W//2, SCREEN_H//2),
+                          self.assets.font_md, (100, 100, 120), center=True)
+            else:
+                draw_text(self.screen, "我的宠物 (TAB:商店)", (SCREEN_W//2, 60), self.assets.font_md, C_GOLD, center=True)
+                for i, pet_id in enumerate(p.pets_owned):
+                    pet = PETS_DB.get(pet_id)
+                    if not pet:
+                        continue
+                    color = C_YELLOW if i == self.pet_menu_index else C_WHITE
+                    prefix = ">> " if i == self.pet_menu_index else "   "
+                    active = " ★出战中" if p.active_pet == pet_id else ""
+                    evolved = p.is_pet_evolved(pet_id)
+                    display_name = pet.evolved_name if evolved else pet.name
+                    level = p.get_pet_level(pet_id)
+                    on_expedition = p.expedition and p.expedition['pet_id'] == pet_id
+
+                    y_base = 90 + i * 80
+                    draw_text(self.screen, f"{prefix}{display_name} Lv{level}{active}",
+                              (80, y_base), self.assets.font_md, color)
+                    if evolved:
+                        draw_text(self.screen, "[进化]", (350, y_base), self.assets.font_sm, (255, 200, 50))
+
+                    desc = pet.evolved_description if evolved else pet.description
+                    draw_text(self.screen, desc, (100, y_base + 20), self.assets.font_sm, (140, 140, 160))
+
+                    # 经验条
+                    exp = p.pet_exp.get(pet_id, 0)
+                    exp_next = level * 50
+                    exp_pct = exp / exp_next if exp_next > 0 else 0
+                    draw_bar(self.screen, 100, y_base + 36, 120, 6, min(1.0, exp_pct), (100, 200, 255))
+                    draw_text(self.screen, f"EXP:{exp}/{exp_next}", (225, y_base + 33), self.assets.font_sm, (120, 160, 200))
+
+                    # 幸福度
+                    happiness = p.pet_happiness.get(pet_id, 50)
+                    h_color = (80, 200, 80) if happiness > 80 else ((200, 200, 80) if happiness > 20 else (200, 80, 80))
+                    face = "♥" if happiness > 80 else ("~" if happiness > 20 else "...")
+                    draw_bar(self.screen, 310, y_base + 36, 80, 6, happiness / 100, h_color)
+                    draw_text(self.screen, f"{face}{happiness}", (395, y_base + 33), self.assets.font_sm, h_color)
+
+                    # 战斗技能
+                    if evolved and pet.evolved_combat_skill:
+                        skill_name, skill_val = pet.evolved_combat_skill
+                        draw_text(self.screen, f"技能: {skill_name}({skill_val})",
+                                  (100, y_base + 50), self.assets.font_sm, (100, 200, 180))
+                    elif pet.combat_skill:
+                        draw_text(self.screen, f"技能: {pet.combat_skill[0]}({pet.combat_skill[1]})",
+                                  (100, y_base + 50), self.assets.font_sm, (100, 200, 180))
+
+                    # 探险状态
+                    if on_expedition:
+                        steps_left = p.expedition['steps_left']
+                        draw_text(self.screen, f"[探险中 剩余{steps_left}步]",
+                                  (300, y_base + 50), self.assets.font_sm, (255, 180, 80))
+
+                    # 精灵
+                    sprite_key = pet.evolved_sprite_key if evolved else pet.sprite_key
+                    sprite = self.assets.npc_sprites.get(sprite_key)
+                    if not sprite:
+                        sprite = self.assets.npc_sprites.get(pet.sprite_key)
+                    if sprite:
+                        bob = int(math.sin(self.tick * 0.06 + i) * 2)
+                        self.screen.blit(sprite, (50, y_base + bob))
+
+        # 操作提示
+        draw_text(self.screen, "↑↓选择  J:出战/收回  F:喂食  P:玩耍  E:探险  TAB:商店  X:返回", (SCREEN_W//2, SCREEN_H - 30),
+                  self.assets.font_sm, (80, 100, 120), center=True)
+
+        # 消息
+        if self.message_queue:
+            msg, timer = self.message_queue[0]
+            draw_text(self.screen, msg, (SCREEN_W//2, SCREEN_H - 60), self.assets.font_md, C_GOLD, center=True)
+
+    def _draw_cooking(self):
+        """烹饪界面"""
+        self.screen.fill((15, 10, 10))
+        p = self.player
+
+        draw_text(self.screen, "【烹饪】", (SCREEN_W//2, 20), self.assets.font_lg, C_GOLD, center=True)
+
+        # 当前buff状态
+        if p.active_meal:
+            meal = MEALS_DB.get(p.active_meal)
+            if meal:
+                draw_text(self.screen, f"当前buff: {meal.name} (剩余{p.meal_buff_turns}回合)",
+                          (SCREEN_W//2, 50), self.assets.font_sm, C_NEON_CYAN, center=True)
+
+        meals = list(MEALS_DB.values())
+        for i, meal in enumerate(meals):
+            y = 80 + i * 70
+            selected = i == self.cooking_index
+            color = C_YELLOW if selected else C_WHITE
+            prefix = ">> " if selected else "   "
+
+            # 检查材料
+            can_cook = all(p.item_count(k) >= v for k, v in meal.materials.items())
+            if not can_cook:
+                color = (100, 100, 100)
+
+            draw_text(self.screen, f"{prefix}{meal.name}", (60, y), self.assets.font_md, color)
+
+            # 材料列表
+            mat_parts = []
+            for k, v in meal.materials.items():
+                have = p.item_count(k)
+                item_name = ITEMS_DB[k].name if k in ITEMS_DB else k
+                c = "✓" if have >= v else "✗"
+                mat_parts.append(f"{item_name}x{v}({c})")
+            draw_text(self.screen, "材料: " + " + ".join(mat_parts), (80, y + 22), self.assets.font_sm, (140, 140, 160))
+
+            # buff预览
+            buff_desc = {'atk': f'ATK+{meal.buff_value}', 'def': f'DEF+{meal.buff_value}',
+                         'hp_regen': f'HP回复{meal.buff_value}/回合', 'all': f'全属性+{meal.buff_value}',
+                         'atk_def': f'ATK+{meal.buff_value} DEF+5'}
+            draw_text(self.screen, f"效果: {buff_desc.get(meal.buff_type, '')} ({meal.buff_turns}回合)",
+                      (80, y + 40), self.assets.font_sm, (100, 200, 180))
+
+        # 操作提示
+        draw_text(self.screen, "↑↓选择  J:烹饪  X:返回", (SCREEN_W//2, SCREEN_H - 30),
+                  self.assets.font_sm, (120, 100, 100), center=True)
+
+        # 消息
+        if self.message_queue:
+            msg, timer = self.message_queue[0]
+            draw_text(self.screen, msg, (SCREEN_W//2, SCREEN_H - 60), self.assets.font_md, C_GOLD, center=True)
 
     def _draw_game_over(self):
         self.screen.fill(C_BLACK)

@@ -403,6 +403,24 @@ class Assets:
         pygame.draw.rect(s, (30, 22, 15), (0, 0, TILE, TILE), 1)
         self.tiles['rust_wall'] = s
 
+        # 农田地块 (tile 21)
+        s = pygame.Surface((TILE, TILE), pygame.SRCALPHA)
+        s.fill((40, 30, 15))
+        # 土壤纹理
+        for y in range(4, TILE, 6):
+            pygame.draw.line(s, (55, 40, 20), (2, y), (TILE - 2, y))
+        pygame.draw.rect(s, (60, 45, 25), (0, 0, TILE, TILE), 1)
+        self.tiles['farm_plot'] = s
+
+        # 围栏 (tile 22)
+        s = pygame.Surface((TILE, TILE), pygame.SRCALPHA)
+        s.fill((50, 40, 30))
+        pygame.draw.rect(s, (80, 65, 45), (2, 8, TILE - 4, 4))
+        pygame.draw.rect(s, (80, 65, 45), (2, 20, TILE - 4, 4))
+        pygame.draw.rect(s, (70, 55, 35), (6, 4, 3, 24))
+        pygame.draw.rect(s, (70, 55, 35), (TILE - 9, 4, 3, 24))
+        self.tiles['fence'] = s
+
     def _gen_player(self):
         jacket_c = (20, 20, 35)
         visor_c = (0, 255, 200)
@@ -603,6 +621,187 @@ class Assets:
         pygame.draw.rect(s, (0, 180, 160), (13, 16, 6, 1))
         pygame.draw.rect(s, (0, 180, 160), (14, 20, 4, 1))
         self.npc_sprites['ai_prophet'] = s
+
+        # --- 恋爱角色精灵 ---
+        # 林月: 冷色调，蓝色短发，白大褂
+        s = pygame.Surface((TILE, TILE), pygame.SRCALPHA)
+        pygame.draw.rect(s, (220, 230, 240), (10, 14, 12, 12))  # 白大褂
+        pygame.draw.rect(s, (180, 160, 140), (10, 4, 12, 12))  # 头
+        pygame.draw.rect(s, (60, 120, 200), (9, 3, 14, 6))  # 蓝色短发
+        pygame.draw.rect(s, (40, 100, 180), (12, 9, 2, 2))  # 眼
+        pygame.draw.rect(s, (40, 100, 180), (18, 9, 2, 2))
+        pygame.draw.rect(s, (0, 180, 255), (14, 17, 4, 3))  # 数据板
+        pygame.draw.rect(s, (200, 210, 220), (11, 26, 4, 5))
+        pygame.draw.rect(s, (200, 210, 220), (17, 26, 4, 5))
+        self.npc_sprites['romance_linyue'] = s
+
+        # 小焰: 暖色调，红色马尾，工装
+        s = pygame.Surface((TILE, TILE), pygame.SRCALPHA)
+        pygame.draw.rect(s, (180, 100, 40), (10, 14, 12, 12))  # 橙色工装
+        pygame.draw.rect(s, (180, 160, 140), (10, 4, 12, 12))  # 头
+        pygame.draw.rect(s, (220, 60, 30), (9, 2, 14, 7))  # 红发
+        pygame.draw.rect(s, (220, 60, 30), (22, 4, 3, 10))  # 马尾
+        pygame.draw.rect(s, (60, 40, 20), (12, 9, 2, 2))
+        pygame.draw.rect(s, (60, 40, 20), (18, 9, 2, 2))
+        pygame.draw.rect(s, (120, 130, 140), (8, 18, 3, 6))  # 扳手
+        pygame.draw.rect(s, (160, 80, 30), (11, 26, 4, 5))
+        pygame.draw.rect(s, (160, 80, 30), (17, 26, 4, 5))
+        self.npc_sprites['romance_xiaoyan'] = s
+
+        # 零: 全息感，淡紫色，半透明
+        s = pygame.Surface((TILE, TILE), pygame.SRCALPHA)
+        pygame.draw.rect(s, (180, 160, 220), (10, 14, 12, 12))  # 淡紫衣
+        pygame.draw.rect(s, (200, 190, 230), (10, 4, 12, 12))  # 头
+        pygame.draw.rect(s, (160, 140, 255), (9, 3, 14, 5))  # 紫发
+        pygame.draw.rect(s, (0, 255, 200), (12, 9, 2, 2))  # 发光眼
+        pygame.draw.rect(s, (0, 255, 200), (18, 9, 2, 2))
+        # 全息光环
+        pygame.draw.rect(s, (0, 200, 180, 100), (8, 2, 16, 1))
+        pygame.draw.rect(s, (0, 200, 180, 100), (7, 14, 1, 12))
+        pygame.draw.rect(s, (0, 200, 180, 100), (24, 14, 1, 12))
+        pygame.draw.rect(s, (160, 140, 220), (11, 26, 4, 5))
+        pygame.draw.rect(s, (160, 140, 220), (17, 26, 4, 5))
+        self.npc_sprites['romance_zero'] = s
+
+        # 阿星: 暗色调，黑色长发，披风
+        s = pygame.Surface((TILE, TILE), pygame.SRCALPHA)
+        pygame.draw.rect(s, (40, 35, 45), (10, 14, 12, 12))  # 暗色披风
+        pygame.draw.rect(s, (180, 160, 140), (10, 4, 12, 12))  # 头
+        pygame.draw.rect(s, (20, 20, 30), (9, 2, 14, 8))  # 黑发
+        pygame.draw.rect(s, (20, 20, 30), (8, 6, 2, 12))  # 长发左
+        pygame.draw.rect(s, (20, 20, 30), (22, 6, 2, 12))  # 长发右
+        pygame.draw.rect(s, (200, 160, 100), (12, 9, 2, 2))  # 琥珀色眼
+        pygame.draw.rect(s, (200, 160, 100), (18, 9, 2, 2))
+        # 披风
+        pygame.draw.rect(s, (35, 30, 40), (7, 16, 3, 10))
+        pygame.draw.rect(s, (35, 30, 40), (22, 16, 3, 10))
+        pygame.draw.rect(s, (35, 30, 40), (11, 26, 4, 5))
+        pygame.draw.rect(s, (35, 30, 40), (17, 26, 4, 5))
+        self.npc_sprites['romance_axing'] = s
+
+        # --- 宠物精灵 ---
+        # 赛博猫
+        s = pygame.Surface((TILE, TILE), pygame.SRCALPHA)
+        pygame.draw.ellipse(s, (100, 110, 130), (8, 14, 16, 12))  # 身体
+        pygame.draw.ellipse(s, (120, 130, 150), (10, 6, 12, 10))  # 头
+        pygame.draw.polygon(s, (120, 130, 150), [(10, 8), (12, 2), (14, 8)])  # 左耳
+        pygame.draw.polygon(s, (120, 130, 150), [(18, 8), (20, 2), (22, 8)])  # 右耳
+        pygame.draw.rect(s, (0, 255, 200), (12, 10, 2, 2))  # 发光眼
+        pygame.draw.rect(s, (0, 255, 200), (18, 10, 2, 2))
+        pygame.draw.line(s, (0, 200, 180), (16, 20), (16, 28))  # 尾巴
+        pygame.draw.line(s, (0, 200, 180), (16, 28), (20, 26))
+        self.npc_sprites['pet_cat'] = s
+
+        # 数据狐
+        s = pygame.Surface((TILE, TILE), pygame.SRCALPHA)
+        pygame.draw.ellipse(s, (200, 120, 40), (8, 14, 16, 12))  # 身体
+        pygame.draw.ellipse(s, (220, 140, 60), (10, 6, 12, 10))  # 头
+        pygame.draw.polygon(s, (220, 140, 60), [(10, 8), (11, 1), (14, 7)])  # 左耳
+        pygame.draw.polygon(s, (220, 140, 60), [(18, 7), (21, 1), (22, 8)])  # 右耳
+        pygame.draw.rect(s, (255, 200, 0), (12, 10, 2, 2))
+        pygame.draw.rect(s, (255, 200, 0), (18, 10, 2, 2))
+        # 大尾巴
+        pygame.draw.ellipse(s, (220, 140, 60), (18, 18, 10, 8))
+        pygame.draw.ellipse(s, (255, 255, 255), (24, 22, 4, 4))  # 尾尖白
+        self.npc_sprites['pet_fox'] = s
+
+        # 纳米鸟
+        s = pygame.Surface((TILE, TILE), pygame.SRCALPHA)
+        pygame.draw.ellipse(s, (100, 200, 255), (10, 10, 12, 10))  # 身体
+        pygame.draw.ellipse(s, (120, 220, 255), (12, 6, 8, 8))  # 头
+        pygame.draw.rect(s, (255, 200, 0), (19, 9, 4, 2))  # 喙
+        pygame.draw.rect(s, (0, 0, 0), (14, 8, 2, 2))  # 眼
+        # 翅膀
+        pygame.draw.polygon(s, (80, 180, 240), [(8, 12), (4, 8), (10, 14)])
+        pygame.draw.polygon(s, (80, 180, 240), [(22, 12), (28, 8), (22, 14)])
+        self.npc_sprites['pet_bird'] = s
+
+        # 机甲犬
+        s = pygame.Surface((TILE, TILE), pygame.SRCALPHA)
+        pygame.draw.rect(s, (140, 150, 160), (8, 14, 16, 10))  # 身体
+        pygame.draw.rect(s, (160, 170, 180), (10, 8, 10, 8))  # 头
+        pygame.draw.rect(s, (255, 60, 40), (12, 10, 2, 2))  # 眼
+        pygame.draw.rect(s, (255, 60, 40), (18, 10, 2, 2))
+        pygame.draw.rect(s, (120, 130, 140), (8, 24, 3, 4))  # 腿
+        pygame.draw.rect(s, (120, 130, 140), (13, 24, 3, 4))
+        pygame.draw.rect(s, (120, 130, 140), (18, 24, 3, 4))
+        pygame.draw.rect(s, (120, 130, 140), (22, 24, 3, 4))
+        self.npc_sprites['pet_dog'] = s
+
+        # 幽灵水母
+        s = pygame.Surface((TILE, TILE), pygame.SRCALPHA)
+        pygame.draw.ellipse(s, (100, 200, 255, 150), (8, 6, 16, 12))  # 伞盖
+        pygame.draw.ellipse(s, (150, 220, 255, 100), (10, 8, 12, 8))  # 内部
+        # 触手
+        for tx in range(10, 24, 3):
+            pygame.draw.line(s, (80, 180, 255, 120), (tx, 18), (tx + 1, 28))
+        pygame.draw.rect(s, (200, 255, 255), (14, 10, 2, 2))  # 眼
+        pygame.draw.rect(s, (200, 255, 255), (18, 10, 2, 2))
+        self.npc_sprites['pet_jelly'] = s
+
+        # --- 进化宠物精灵 ---
+        # 量子猫 (进化)
+        s = pygame.Surface((TILE, TILE), pygame.SRCALPHA)
+        pygame.draw.ellipse(s, (60, 80, 180), (6, 12, 20, 14))  # 身体
+        pygame.draw.ellipse(s, (80, 100, 200), (8, 4, 16, 12))  # 头
+        pygame.draw.polygon(s, (100, 120, 220), [(8, 6), (10, 0), (13, 6)])  # 左耳
+        pygame.draw.polygon(s, (100, 120, 220), [(19, 6), (22, 0), (24, 6)])  # 右耳
+        pygame.draw.rect(s, (0, 255, 255), (11, 8, 3, 3))  # 发光眼
+        pygame.draw.rect(s, (0, 255, 255), (18, 8, 3, 3))
+        pygame.draw.line(s, (0, 255, 255), (16, 20), (16, 28))  # 尾巴
+        pygame.draw.line(s, (0, 255, 255), (16, 28), (22, 24))
+        # 量子光环
+        pygame.draw.circle(s, (0, 200, 255, 80), (16, 16), 14, 1)
+        self.npc_sprites['pet_cat_evo'] = s
+
+        # 暗网狐 (进化)
+        s = pygame.Surface((TILE, TILE), pygame.SRCALPHA)
+        pygame.draw.ellipse(s, (150, 40, 80), (6, 12, 20, 14))  # 身体
+        pygame.draw.ellipse(s, (180, 60, 100), (8, 4, 16, 12))  # 头
+        pygame.draw.polygon(s, (180, 60, 100), [(8, 6), (9, 0), (13, 5)])
+        pygame.draw.polygon(s, (180, 60, 100), [(19, 5), (23, 0), (24, 6)])
+        pygame.draw.rect(s, (255, 100, 0), (11, 8, 3, 3))
+        pygame.draw.rect(s, (255, 100, 0), (18, 8, 3, 3))
+        pygame.draw.ellipse(s, (180, 60, 100), (20, 16, 12, 10))  # 大尾巴
+        pygame.draw.ellipse(s, (255, 150, 50), (26, 20, 6, 6))  # 尾尖
+        self.npc_sprites['pet_fox_evo'] = s
+
+        # 等离子鸟 (进化)
+        s = pygame.Surface((TILE, TILE), pygame.SRCALPHA)
+        pygame.draw.ellipse(s, (50, 150, 255), (8, 8, 16, 14))  # 身体
+        pygame.draw.ellipse(s, (80, 180, 255), (10, 4, 12, 10))  # 头
+        pygame.draw.rect(s, (255, 255, 0), (21, 7, 5, 3))  # 喙
+        pygame.draw.rect(s, (255, 255, 255), (13, 6, 3, 3))  # 眼
+        pygame.draw.polygon(s, (30, 120, 255), [(6, 10), (0, 4), (8, 12)])  # 左翅
+        pygame.draw.polygon(s, (30, 120, 255), [(24, 10), (30, 4), (24, 12)])  # 右翅
+        # 等离子尾
+        pygame.draw.line(s, (100, 200, 255), (14, 22), (10, 28))
+        pygame.draw.line(s, (100, 200, 255), (18, 22), (22, 28))
+        self.npc_sprites['pet_bird_evo'] = s
+
+        # 重装犬 (进化)
+        s = pygame.Surface((TILE, TILE), pygame.SRCALPHA)
+        pygame.draw.rect(s, (100, 110, 130), (6, 12, 20, 12))  # 身体
+        pygame.draw.rect(s, (120, 130, 150), (8, 6, 14, 10))  # 头
+        pygame.draw.rect(s, (255, 30, 30), (10, 8, 3, 3))  # 眼
+        pygame.draw.rect(s, (255, 30, 30), (19, 8, 3, 3))
+        # 装甲
+        pygame.draw.rect(s, (80, 90, 100), (6, 14, 20, 4))
+        pygame.draw.rect(s, (90, 100, 110), (6, 24, 4, 5))  # 腿
+        pygame.draw.rect(s, (90, 100, 110), (12, 24, 4, 5))
+        pygame.draw.rect(s, (90, 100, 110), (18, 24, 4, 5))
+        pygame.draw.rect(s, (90, 100, 110), (24, 24, 4, 5))
+        self.npc_sprites['pet_dog_evo'] = s
+
+        # 深渊水母 (进化)
+        s = pygame.Surface((TILE, TILE), pygame.SRCALPHA)
+        pygame.draw.ellipse(s, (60, 100, 200, 180), (6, 4, 20, 14))  # 伞盖
+        pygame.draw.ellipse(s, (100, 150, 255, 120), (8, 6, 16, 10))  # 内部
+        for tx in range(8, 26, 3):
+            pygame.draw.line(s, (40, 80, 200, 150), (tx, 18), (tx + 2, 30))
+        pygame.draw.rect(s, (150, 200, 255), (12, 8, 3, 3))  # 眼
+        pygame.draw.rect(s, (150, 200, 255), (19, 8, 3, 3))
+        self.npc_sprites['pet_jelly_evo'] = s
 
     def _gen_enemies(self):
         # --- slime → 纳米虫: 小型金属昆虫, 绿色发光 (64x64) ---
@@ -953,6 +1152,77 @@ class Assets:
         pygame.draw.line(s, (0, 255, 200), (49, 25), (54, 35), 2)
         self.enemy_sprites['darknet_guard'] = s
 
+        # --- firewall_guardian: 防火墙守卫 (96x96) ---
+        s = pygame.Surface((96, 96), pygame.SRCALPHA)
+        # 六角盾形身体
+        pygame.draw.polygon(s, (30, 60, 100), [(48, 8), (80, 28), (80, 68), (48, 88), (16, 68), (16, 28)])
+        pygame.draw.polygon(s, (40, 80, 130), [(48, 14), (74, 32), (74, 64), (48, 82), (22, 64), (22, 32)])
+        # 防火墙纹理
+        for y in range(20, 80, 6):
+            c = (0, 200, 255) if y % 12 == 0 else (0, 140, 200)
+            pygame.draw.line(s, c, (24, y), (72, y), 1)
+        # 中心眼
+        pygame.draw.circle(s, (255, 100, 0), (48, 48), 12)
+        pygame.draw.circle(s, (255, 180, 50), (48, 48), 7)
+        pygame.draw.circle(s, (255, 255, 200), (48, 48), 3)
+        # 外环
+        pygame.draw.polygon(s, (0, 200, 255), [(48, 8), (80, 28), (80, 68), (48, 88), (16, 68), (16, 28)], 2)
+        self.enemy_sprites['firewall_guardian'] = s
+
+        # --- data_devourer: 数据吞噬者 (96x96) ---
+        s = pygame.Surface((96, 96), pygame.SRCALPHA)
+        # 巨大嘴形
+        pygame.draw.ellipse(s, (60, 20, 60), (12, 20, 72, 56))
+        pygame.draw.ellipse(s, (80, 30, 80), (18, 26, 60, 44))
+        # 嘴巴（张开）
+        pygame.draw.ellipse(s, (20, 5, 30), (28, 38, 40, 24))
+        # 牙齿
+        for tx in range(32, 64, 6):
+            pygame.draw.polygon(s, (200, 200, 220), [(tx, 38), (tx + 3, 46), (tx + 6, 38)])
+            pygame.draw.polygon(s, (200, 200, 220), [(tx, 62), (tx + 3, 54), (tx + 6, 62)])
+        # 眼睛（多只）
+        for ex, ey in [(28, 28), (48, 22), (68, 28)]:
+            pygame.draw.circle(s, (255, 0, 80), (ex, ey), 5)
+            pygame.draw.circle(s, (255, 100, 150), (ex, ey), 2)
+        # 数据流触手
+        import math
+        for angle in range(0, 360, 60):
+            rad = math.radians(angle)
+            ex = int(48 + 40 * math.cos(rad))
+            ey = int(48 + 40 * math.sin(rad))
+            pygame.draw.line(s, (180, 0, 180), (48, 48), (ex, ey), 2)
+            pygame.draw.circle(s, (255, 0, 200), (ex, ey), 3)
+        self.enemy_sprites['data_devourer'] = s
+
+        # --- darknet_lord: 暗网之主 (96x96) ---
+        s = pygame.Surface((96, 96), pygame.SRCALPHA)
+        # 暗影身体
+        pygame.draw.circle(s, (20, 0, 40), (48, 48), 38)
+        pygame.draw.circle(s, (40, 10, 60), (48, 48), 28)
+        pygame.draw.circle(s, (60, 20, 80), (48, 48), 18)
+        # 王冠
+        for cx in [36, 44, 52, 60]:
+            pygame.draw.polygon(s, (180, 60, 255), [(cx, 12), (cx + 4, 4), (cx + 8, 12)])
+        pygame.draw.rect(s, (140, 40, 200), (34, 12, 28, 4))
+        # 双眼
+        pygame.draw.rect(s, (255, 0, 0), (38, 40, 6, 4))
+        pygame.draw.rect(s, (255, 0, 0), (52, 40, 6, 4))
+        pygame.draw.rect(s, (255, 200, 200), (40, 41, 2, 2))
+        pygame.draw.rect(s, (255, 200, 200), (54, 41, 2, 2))
+        # 暗网光环
+        for i in range(12):
+            rad = math.radians(i * 30)
+            ex = int(48 + 44 * math.cos(rad))
+            ey = int(48 + 44 * math.sin(rad))
+            c = [(180, 60, 255), (120, 0, 200), (255, 0, 150)][i % 3]
+            pygame.draw.line(s, c, (48, 48), (ex, ey), 1)
+            pygame.draw.circle(s, c, (ex, ey), 2)
+        # 符文碎片
+        for _ in range(10):
+            rx, ry = random.randint(10, 86), random.randint(10, 86)
+            pygame.draw.rect(s, (180, 60, 255), (rx, ry, 2, 2))
+        self.enemy_sprites['darknet_lord'] = s
+
     def _gen_items(self):
         # --- hp_potion → 纳米注射器: 注射器形状, 红色液体 ---
         s = pygame.Surface((24, 24), pygame.SRCALPHA)
@@ -1171,3 +1441,44 @@ class Assets:
         pygame.draw.line(s, (255, 255, 255), (12, 8), (12, 16), 2)
         pygame.draw.line(s, (255, 255, 255), (8, 12), (16, 12), 2)
         self.item_icons['antivirus'] = s
+
+        # --- quantum_blade: 量子之刃 ---
+        s = pygame.Surface((24, 24), pygame.SRCALPHA)
+        pygame.draw.rect(s, (180, 60, 255), (10, 1, 4, 14))
+        pygame.draw.rect(s, (220, 100, 255), (11, 2, 2, 12))
+        pygame.draw.polygon(s, (255, 150, 255), [(12, 0), (9, 4), (15, 4)])
+        pygame.draw.rect(s, (100, 110, 130), (8, 15, 8, 2))
+        pygame.draw.rect(s, (60, 20, 80), (10, 17, 4, 4))
+        self.item_icons['quantum_blade'] = s
+
+        # --- nano_amplifier: 纳米增幅器 ---
+        s = pygame.Surface((24, 24), pygame.SRCALPHA)
+        pygame.draw.circle(s, (0, 200, 180), (12, 12), 8)
+        pygame.draw.circle(s, (0, 255, 220), (12, 12), 5)
+        pygame.draw.circle(s, (180, 60, 255), (12, 12), 2)
+        pygame.draw.circle(s, (0, 200, 180), (12, 12), 10, 1)
+        self.item_icons['nano_amplifier'] = s
+
+        # --- virus_shield: 病毒护盾 ---
+        s = pygame.Surface((24, 24), pygame.SRCALPHA)
+        pygame.draw.polygon(s, (40, 80, 40), [(12, 2), (22, 8), (20, 20), (12, 22), (4, 20), (2, 8)])
+        pygame.draw.polygon(s, (60, 120, 60), [(12, 4), (20, 9), (18, 19), (12, 20), (6, 19), (4, 9)])
+        pygame.draw.rect(s, (0, 255, 100), (10, 10, 4, 4))
+        self.item_icons['virus_shield'] = s
+
+        # --- overclock_core: 超频核心 ---
+        s = pygame.Surface((24, 24), pygame.SRCALPHA)
+        pygame.draw.rect(s, (80, 20, 20), (6, 6, 12, 12))
+        pygame.draw.rect(s, (200, 50, 50), (8, 8, 8, 8))
+        pygame.draw.rect(s, (255, 150, 50), (10, 10, 4, 4))
+        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            pygame.draw.line(s, (255, 100, 0), (12, 12), (12 + dx * 10, 12 + dy * 10), 1)
+        self.item_icons['overclock_core'] = s
+
+        # --- life_spring: 生命之泉 ---
+        s = pygame.Surface((24, 24), pygame.SRCALPHA)
+        pygame.draw.ellipse(s, (0, 100, 200), (4, 8, 16, 14))
+        pygame.draw.ellipse(s, (0, 180, 255), (6, 10, 12, 10))
+        pygame.draw.rect(s, (200, 255, 200), (10, 4, 4, 6))
+        pygame.draw.circle(s, (255, 255, 255), (12, 4), 2)
+        self.item_icons['life_spring'] = s

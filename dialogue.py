@@ -74,6 +74,9 @@ class DialogueBox:
                         self.active = False
                         return
                     item_key, price = self.shop_items[self.shop_index]
+                    # 成就：数据囤积者 商店价格-20%
+                    if 'data_hoarder' in player.achievements:
+                        price = max(1, int(price * 0.8))
                     if player.stats.gold >= price:
                         player.stats.gold -= price
                         player.add_item(item_key)
@@ -174,10 +177,13 @@ class DialogueBox:
                 # 购买列表
                 for i, (key, price) in enumerate(self.shop_items):
                     item = ITEMS_DB[key]
+                    disp_price = price
+                    if player and 'data_hoarder' in player.achievements:
+                        disp_price = max(1, int(price * 0.8))
                     color = C_YELLOW if i == self.shop_index else C_WHITE
                     prefix = ">> " if i == self.shop_index else "   "
-                    affordable = "  " if player and player.stats.gold >= price else "✗ "
-                    draw_text(surf, f"{prefix}{affordable}{item.name} - {price}G", (bx + 30, list_y + i * 22), self.assets.font_sm, color)
+                    affordable = "  " if player and player.stats.gold >= disp_price else "✗ "
+                    draw_text(surf, f"{prefix}{affordable}{item.name} - {disp_price}G", (bx + 30, list_y + i * 22), self.assets.font_sm, color)
                 if self.shop_index < len(self.shop_items):
                     desc_item = ITEMS_DB[self.shop_items[self.shop_index][0]]
                 li = len(self.shop_items)
