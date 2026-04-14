@@ -1482,3 +1482,33 @@ class Assets:
         pygame.draw.rect(s, (200, 255, 200), (10, 4, 4, 6))
         pygame.draw.circle(s, (255, 255, 255), (12, 4), 2)
         self.item_icons['life_spring'] = s
+
+        # --- fish_common: 普通鱼 - 青色小鱼 ---
+        s = pygame.Surface((24, 24), pygame.SRCALPHA)
+        pygame.draw.ellipse(s, (0, 180, 160), (4, 8, 16, 10))
+        pygame.draw.ellipse(s, (0, 220, 200), (6, 10, 12, 6))
+        pygame.draw.polygon(s, (0, 160, 140), [(18, 13), (22, 9), (22, 17)])
+        pygame.draw.circle(s, (255, 255, 255), (8, 11), 2)
+        pygame.draw.circle(s, (0, 0, 0), (8, 11), 1)
+        self.item_icons['fish_common'] = s
+
+        # --- fish_rare: 稀有鱼 - 金色鱼 ---
+        s = pygame.Surface((24, 24), pygame.SRCALPHA)
+        pygame.draw.ellipse(s, (200, 160, 40), (3, 7, 18, 12))
+        pygame.draw.ellipse(s, (255, 200, 60), (5, 9, 14, 8))
+        pygame.draw.polygon(s, (200, 140, 30), [(19, 13), (23, 8), (23, 18)])
+        pygame.draw.circle(s, (255, 255, 255), (8, 11), 2)
+        pygame.draw.circle(s, (0, 0, 0), (8, 11), 1)
+        pygame.draw.line(s, (255, 255, 200), (10, 9), (14, 9))
+        self.item_icons['fish_rare'] = s
+
+        # --- fish_legend: 传说鱼 - 紫色发光鱼 ---
+        s = pygame.Surface((24, 24), pygame.SRCALPHA)
+        pygame.draw.ellipse(s, (120, 40, 200), (2, 6, 20, 14))
+        pygame.draw.ellipse(s, (180, 80, 255), (4, 8, 16, 10))
+        pygame.draw.polygon(s, (140, 50, 220), [(20, 13), (23, 7), (23, 19)])
+        pygame.draw.circle(s, (255, 255, 255), (7, 11), 2)
+        pygame.draw.circle(s, (100, 0, 200), (7, 11), 1)
+        pygame.draw.line(s, (255, 200, 255), (10, 8), (16, 8))
+        pygame.draw.line(s, (255, 200, 255), (10, 14), (16, 14))
+        self.item_icons['fish_legend'] = s

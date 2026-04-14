@@ -376,6 +376,9 @@ class Combat:
         if self.enemy_weakness and self.enemy_weakness == skill_type:
             dmg = int(dmg * 1.5)
             self.message = ""  # 会被覆盖
+        # 风暴天气：hack/emp技能+20%
+        if self.player.weather == 'storm' and skill_type in ('hack', 'emp'):
+            dmg = int(dmg * 1.2)
         dmg = self._apply_crit(dmg)
         return dmg
 
@@ -784,6 +787,16 @@ class Combat:
             self.message += f" 升级到Lv{self.player.stats.level}！获得1技能点！"
         # 成就检查
         self._check_victory_achievements()
+        # 悬赏板：击杀类进度 + 存活类进度
+        for ab in self.player.active_bounties:
+            from entities import BOUNTY_POOL
+            bdef = BOUNTY_POOL.get(ab['bounty_id'])
+            if not bdef:
+                continue
+            if bdef.bounty_type == 'kill' and bdef.target == self.enemy_key:
+                ab['progress'] = ab.get('progress', 0) + 1
+            if bdef.bounty_type == 'survive':
+                ab['progress'] = max(ab.get('progress', 0), self.turn_count)
 
     def _check_victory_achievements(self):
         """胜利后检查成就"""

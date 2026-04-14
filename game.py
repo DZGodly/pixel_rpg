@@ -25,7 +25,12 @@ from game_map import (GameMap, AREA_VILLAGE, AREA_FOREST, AREA_DUNGEON,
 from entities import (Item, ITEMS_DB, PlayerStats, Player, NPC, EnemyDef, ENEMY_DEFS, ENCOUNTER_TABLE,
                       SKILL_TREE, StatusEffect, ROMANCE_CHARS, RomanceChar,
                       CROPS_DB, PlotState, PETS_DB, PetDef,
-                      FUSION_RECIPES, ACHIEVEMENTS, MealDef, MEALS_DB)
+                      FUSION_RECIPES, ACHIEVEMENTS, MealDef, MEALS_DB,
+                      FishDef, FISH_DB, BountyDef, BOUNTY_POOL,
+                      CRAFT_RECIPES, AFFIXES, HACK_WORDS,
+                      QUEST_CHAINS, ARENA_WAVES, DAILY_MODIFIERS,
+                      PET_BATTLE_MOVES, PET_BATTLE_NPCS, PetBattleMove,
+                      FURNITURE_DB)
 from combat import Combat, CombatState
 from dialogue import DialogueBox
 
@@ -44,6 +49,18 @@ class GameState(Enum):
     FARM = auto()
     PET_MENU = auto()
     COOKING = auto()
+    FISHING = auto()
+    BOUNTY_BOARD = auto()
+    # v0.13 新状态
+    HACKING = auto()
+    ARENA = auto()
+    CRAFTING = auto()
+    CODEX = auto()
+    QUEST_CHAIN = auto()
+    DAILY_CHALLENGE = auto()
+    PET_BATTLE = auto()
+    HOME_DECOR = auto()
+    NG_PLUS_CONFIRM = auto()
 
 class Game:
     def __init__(self):
@@ -86,6 +103,60 @@ class Game:
         self.pet_feed_index = 0
         # 预渲染标题背景
         self._title_bg = self._prerender_title_bg()
+        # 钓鱼系统
+        self.fishing_state = 'waiting'  # waiting/casting/reeling/result
+        self.fishing_indicator = 0.0
+        self.fishing_target_pos = 0.5
+        self.fishing_catch_zone = 0.2
+        self.fishing_speed = 1.5
+        self.fishing_fish = None
+        self.fishing_dir = 1  # 乒乓方向
+        self.fishing_result = ''
+        self.fishing_result_timer = 0
+        # 悬赏板
+        self.bounty_index = 0
+        # 天气粒子
+        self.weather_particles: List[List] = []  # [[x, y, speed], ...]
+        self.lightning_timer = 0
+        # v0.13 新系统状态
+        # 黑客入侵小游戏
+        self.hack_word = ''
+        self.hack_guess = ''
+        self.hack_attempts = 4
+        self.hack_feedback: List[Tuple[str, str]] = []  # [(guess, result_colors)]
+        self.hack_reward = None  # (item_key, count) or ('gold', amount)
+        # 竞技场
+        self.arena_wave = 0
+        self.arena_active = False
+        self.arena_hp_saved = 0
+        self.arena_mp_saved = 0
+        # 装备合成
+        self.craft_index = 0
+        # 图鉴
+        self.codex_tab = 0  # 0=monster, 1=fish, 2=recipe
+        self.codex_scroll = 0
+        # NPC任务链
+        self.quest_chain_id = ''
+        # 每日挑战
+        self.daily_active = False
+        self.daily_modifier = None
+        # 宠物对战
+        self.pet_battle_npc_idx = 0
+        self.pet_battle_state = 'choose'  # choose/fight/result
+        self.pet_battle_enemy_hp = 0
+        self.pet_battle_enemy_max_hp = 0
+        self.pet_battle_pet_hp = 0
+        self.pet_battle_pet_max_hp = 0
+        self.pet_battle_move_idx = 0
+        self.pet_battle_msg = ''
+        self.pet_battle_turn = 'player'  # player/enemy
+        # 据点/家园
+        self.home_decor_index = 0
+        # 随机事件扩展
+        self.wandering_ai_timer = 0
+        self.data_storm_timer = 0
+        # NG+
+        self.ng_plus_pending = False
         # 瓦片渲染查找表: tile_id -> (base_key, overlay_key or None)
         self._tile_map = {
             0: ('grass', None),       # 金属地板 (variant handled separately)
@@ -227,6 +298,9 @@ class Game:
                  "别看我只是个歌手，我也听到不少消息。",
                  "线人那边最近很忙，好像在调查什么大事。你可以去找他。"],
                 AREA_HOUSE_N1),
+            NPC(20, 8, 'guard', '赏金终端',
+                ["[系统] 赏金任务板已上线。按J查看可用任务。"],
+                AREA_HOUSE_N1),
             # 霓虹街·改装店 (N2)
             NPC(10, 4, 'arms_dealer', '改装师·小薇',
                 ["想升级装备？看看这些，都是最新的。",
@@ -270,6 +344,19 @@ class Game:
                 ["情报就是力量。", "工厂Boss弱EMP，AI核心弱黑客攻击。",
                  "量子霸主·真身是最强的存在，做好万全准备。"],
                 AREA_BLACK_MARKET),
+            # v0.13 新NPC
+            NPC(25, 4, 'guard', '竞技场管理员',
+                ["欢迎来到数据竞技场！", "在这里你将面对一波又一波的敌人。", "按J开始挑战！"],
+                AREA_BLACK_MARKET),
+            NPC(12, 8, 'witch', '宠物训练师',
+                ["想让你的宠物变得更强吗？", "来一场宠物对战吧！按J开始！"],
+                AREA_VILLAGE),
+            NPC(28, 12, 'factory_worker', '改造工匠',
+                ["带材料来，我帮你打造装备。", "合成的装备会附带随机词缀！按J开始合成。"],
+                AREA_FACTORY),
+            NPC(8, 14, 'ai_prophet', '每日挑战终端',
+                ["[系统] 每日挑战已上线。", "每天一次特殊战斗条件，完成获得奖励！按J参加。"],
+                AREA_NEON_STREET),
         ]
 
         # 宝箱位置
@@ -421,7 +508,22 @@ class Game:
                 elif event.key == pygame.K_F5:
                     self._save_game()
                 elif event.key == pygame.K_j:
-                    self._interact()
+                    # 检查面前是否为水瓦片 → 钓鱼
+                    dx, dy = 0, 0
+                    if self.player.direction == 'up': dy = -1
+                    elif self.player.direction == 'down': dy = 1
+                    elif self.player.direction == 'left': dx = -1
+                    elif self.player.direction == 'right': dx = 1
+                    ftx = self.player.tx + dx
+                    fty = self.player.ty + dy
+                    tile = self.game_map.get_tile(self.player.area, ftx, fty)
+                    if tile == 2:
+                        self._start_fishing()
+                    elif tile == 14:
+                        # 终端机 → 黑客入侵小游戏
+                        self._start_hacking()
+                    else:
+                        self._interact()
         elif self.state == GameState.COMBAT:
             if self.combat:
                 still_fighting = self.combat.handle_input(event)
@@ -447,6 +549,35 @@ class Game:
             self._handle_pet_menu_event(event)
         elif self.state == GameState.COOKING:
             self._handle_cooking_event(event)
+        elif self.state == GameState.FISHING:
+            self._handle_fishing_event(event)
+        elif self.state == GameState.BOUNTY_BOARD:
+            self._handle_bounty_event(event)
+        elif self.state == GameState.HACKING:
+            self._handle_hacking_event(event)
+        elif self.state == GameState.ARENA:
+            # Arena uses combat, handled via combat dispatch
+            if self.combat:
+                still_fighting = self.combat.handle_input(event)
+                if not still_fighting:
+                    self._on_arena_combat_end()
+        elif self.state == GameState.CRAFTING:
+            self._handle_crafting_event(event)
+        elif self.state == GameState.CODEX:
+            self._handle_codex_event(event)
+        elif self.state == GameState.QUEST_CHAIN:
+            self._handle_quest_chain_event(event)
+        elif self.state == GameState.DAILY_CHALLENGE:
+            if self.combat:
+                still_fighting = self.combat.handle_input(event)
+                if not still_fighting:
+                    self._on_daily_combat_end()
+        elif self.state == GameState.PET_BATTLE:
+            self._handle_pet_battle_event(event)
+        elif self.state == GameState.HOME_DECOR:
+            self._handle_home_decor_event(event)
+        elif self.state == GameState.NG_PLUS_CONFIRM:
+            self._handle_ng_plus_event(event)
         elif self.state == GameState.GAME_OVER:
             if event.type == pygame.KEYDOWN and event.key in (pygame.K_RETURN, pygame.K_j):
                 self._restart()
@@ -478,9 +609,9 @@ class Game:
         if event.key == pygame.K_ESCAPE or event.key == pygame.K_x:
             self.state = GameState.EXPLORE
         elif event.key == pygame.K_UP:
-            self.menu_index = (self.menu_index - 1) % 9
+            self.menu_index = (self.menu_index - 1) % 11
         elif event.key == pygame.K_DOWN:
-            self.menu_index = (self.menu_index + 1) % 9
+            self.menu_index = (self.menu_index + 1) % 11
         elif event.key in (pygame.K_RETURN, pygame.K_j):
             if self.menu_index == 0:  # 物品
                 self.show_inventory = True
@@ -501,12 +632,19 @@ class Game:
             elif self.menu_index == 5:  # 烹饪
                 self.state = GameState.COOKING
                 self.cooking_index = 0
-            elif self.menu_index == 6:  # 保存
+            elif self.menu_index == 6:  # 图鉴
+                self.state = GameState.CODEX
+                self.codex_tab = 0
+                self.codex_scroll = 0
+            elif self.menu_index == 7:  # 任务链
+                self.state = GameState.QUEST_CHAIN
+                self.quest_chain_id = ''
+            elif self.menu_index == 8:  # 保存
                 self._save_game()
                 self.state = GameState.EXPLORE
-            elif self.menu_index == 7:  # 读取
+            elif self.menu_index == 9:  # 读取
                 self._load_game()
-            elif self.menu_index == 8:  # 返回
+            elif self.menu_index == 10:  # 返回
                 self.state = GameState.EXPLORE
 
     def _interact(self):
@@ -628,10 +766,29 @@ class Game:
                 self.state = GameState.PET_MENU
                 self.pet_menu_index = 0
                 return
+            # 家具/据点管理（书架位置）
+            if target_tx == 5 and target_ty == 2:
+                self.state = GameState.HOME_DECOR
+                self.home_decor_index = 0
+                return
+            # 图鉴（沙发位置）
+            if target_tx == 10 and target_ty == 2:
+                self.state = GameState.CODEX
+                self.codex_tab = 0
+                self.codex_scroll = 0
+                return
 
     def _handle_npc_interact(self, npc):
         """处理NPC交互，含任务逻辑"""
         p = self.player
+
+        # 赏金终端 → 进入悬赏板
+        if npc.name == '赏金终端':
+            self._refresh_bounty_board()
+            self.state = GameState.BOUNTY_BOARD
+            self.bounty_index = 0
+            return
+
         # 主线：城市管理员 - Stage 0 → 1
         if npc.name == '城市管理员' and p.quest_stage == 0:
             p.quest_stage = 1
@@ -703,6 +860,24 @@ class Game:
                 p.side_quests['black_market_pass'] = 2
                 p.quest_flags['black_market_open'] = True
                 self.message_queue.append(("【支线完成】黑市通行证！霓虹街黑市入口已解锁！", 180))
+
+        # v0.13 新NPC交互
+        if npc.name == '竞技场管理员':
+            self._start_arena()
+            return
+        if npc.name == '宠物训练师':
+            if not p.active_pet:
+                self.message_queue.append(("你需要先装备一只宠物！", 90))
+            else:
+                self._start_pet_battle()
+                return
+        if npc.name == '改造工匠':
+            self.state = GameState.CRAFTING
+            self.craft_index = 0
+            return
+        if npc.name == '每日挑战终端':
+            self._start_daily_challenge()
+            return
 
         self.dialogue.start(npc, p.quest_stage)
 
@@ -1072,10 +1247,194 @@ class Game:
                     self.player.remove_item(k, v)
                 self.player.active_meal = meal.meal_id
                 self.player.meal_buff_turns = meal.buff_turns
+                self.player.codex_recipes.add(meal.meal_id)
                 buff_desc = {'atk': f'ATK+{meal.buff_value}', 'def': f'DEF+{meal.buff_value}',
                              'hp_regen': f'HP回复{meal.buff_value}/回合', 'all': f'全属性+{meal.buff_value}',
                              'atk_def': f'ATK+{meal.buff_value} DEF+5'}
                 self.message_queue.append((f"烹饪了{meal.name}！{buff_desc.get(meal.buff_type, '')} {meal.buff_turns}回合", 150))
+
+    # ============================================================
+    # 钓鱼系统
+    # ============================================================
+    def _start_fishing(self):
+        """开始钓鱼"""
+        area = self.player.area
+        available = [f for f in FISH_DB.values() if area in f.areas]
+        if not available:
+            self.message_queue.append(("这里似乎没有鱼...", 90))
+            return
+        # 按rarity加权: 普通3 稀有2 传说1, night时传说+50%
+        weights = []
+        for f in available:
+            w = {1: 3, 2: 2, 3: 1}.get(f.rarity, 1)
+            if f.rarity == 3 and self._get_time_phase() == 'night':
+                w = int(w * 1.5) or 1
+            weights.append(w)
+        import random as _r
+        fish = _r.choices(available, weights=weights, k=1)[0]
+        self.fishing_fish = fish.fish_id
+        self.fishing_target_pos = random.uniform(0.2, 0.8)
+        self.fishing_catch_zone = fish.catch_zone
+        self.fishing_speed = 1.5 + (fish.rarity - 1) * 0.5
+        self.fishing_indicator = 0.0
+        self.fishing_dir = 1
+        self.fishing_state = 'casting'
+        self.fishing_result = ''
+        self.fishing_result_timer = 0
+        self.state = GameState.FISHING
+
+    def _handle_fishing_event(self, event):
+        if event.type != pygame.KEYDOWN:
+            return
+        if self.fishing_state == 'casting':
+            if event.key == pygame.K_j:
+                # 判定
+                fish = FISH_DB.get(self.fishing_fish)
+                if fish:
+                    dist = abs(self.fishing_indicator - self.fishing_target_pos)
+                    if dist < self.fishing_catch_zone / 2:
+                        # 成功
+                        self.player.add_item(self.fishing_fish)
+                        self.player.fish_caught[self.fishing_fish] = self.player.fish_caught.get(self.fishing_fish, 0) + 1
+                        self.player.codex_fish.add(self.fishing_fish)
+                        self.fishing_result = f"钓到了 {fish.name}！(★{'★' * (fish.rarity - 1)})"
+                        px = SCREEN_W // 2
+                        py = SCREEN_H // 2
+                        colors = {1: (0, 200, 180), 2: (255, 200, 50), 3: (180, 60, 255)}
+                        self.particles.emit(px, py, 20, colors.get(fish.rarity, (255, 255, 255)), 3, 50, 4, 'magic')
+                    else:
+                        self.fishing_result = "鱼跑了...再试试？"
+                self.fishing_state = 'result'
+                self.fishing_result_timer = 90
+            elif event.key in (pygame.K_ESCAPE, pygame.K_x):
+                self.state = GameState.EXPLORE
+        elif self.fishing_state == 'result':
+            if event.key in (pygame.K_j, pygame.K_RETURN):
+                # 重新钓
+                self._start_fishing()
+            elif event.key in (pygame.K_ESCAPE, pygame.K_x):
+                self.state = GameState.EXPLORE
+
+    # ============================================================
+    # 悬赏板系统
+    # ============================================================
+    def _refresh_bounty_board(self):
+        """刷新赏金板（进入酒吧时或板空时）"""
+        p = self.player
+        if p.bounty_board and not all(bid in p.completed_bounties for bid in p.bounty_board):
+            return  # 还有未完成的，不刷新
+        available = [bid for bid in BOUNTY_POOL if bid not in p.completed_bounties]
+        random.shuffle(available)
+        p.bounty_board = available[:3]
+
+    def _handle_bounty_event(self, event):
+        if event.type != pygame.KEYDOWN:
+            return
+        p = self.player
+        board = p.bounty_board
+        if not board:
+            if event.key in (pygame.K_ESCAPE, pygame.K_x):
+                self.state = GameState.EXPLORE
+            return
+        if event.key in (pygame.K_ESCAPE, pygame.K_x):
+            self.state = GameState.EXPLORE
+        elif event.key == pygame.K_UP:
+            self.bounty_index = (self.bounty_index - 1) % len(board)
+        elif event.key == pygame.K_DOWN:
+            self.bounty_index = (self.bounty_index + 1) % len(board)
+        elif event.key in (pygame.K_j, pygame.K_RETURN):
+            if self.bounty_index < len(board):
+                bid = board[self.bounty_index]
+                bdef = BOUNTY_POOL.get(bid)
+                if not bdef:
+                    return
+                # 检查是否已接取
+                active_ids = [b['bounty_id'] for b in p.active_bounties]
+                if bid in active_ids:
+                    # 检查是否完成
+                    ab = next(b for b in p.active_bounties if b['bounty_id'] == bid)
+                    if self._is_bounty_complete(ab, bdef):
+                        # 领取奖励
+                        self._claim_bounty_reward(ab, bdef)
+                    else:
+                        self.message_queue.append(("任务尚未完成！", 90))
+                elif bid in p.completed_bounties:
+                    self.message_queue.append(("已完成此任务！", 90))
+                elif len(p.active_bounties) >= 3:
+                    self.message_queue.append(("最多同时接取3个赏金任务！", 90))
+                else:
+                    # 接取
+                    p.active_bounties.append({'bounty_id': bid, 'progress': 0})
+                    self.message_queue.append((f"接取赏金任务：{bdef.name}！", 120))
+
+    def _is_bounty_complete(self, ab, bdef):
+        if bdef.bounty_type == 'kill':
+            return ab['progress'] >= bdef.target_count
+        elif bdef.bounty_type == 'collect':
+            return self.player.item_count(bdef.target) >= bdef.target_count
+        elif bdef.bounty_type == 'survive':
+            return ab['progress'] >= bdef.target_count
+        return False
+
+    def _claim_bounty_reward(self, ab, bdef):
+        p = self.player
+        bid = ab['bounty_id']
+        # 扣除collect类物品
+        if bdef.bounty_type == 'collect':
+            p.remove_item(bdef.target, bdef.target_count)
+        # 发放奖励
+        rewards = bdef.rewards
+        p.stats.gold += rewards.get('gold', 0)
+        for item_key, cnt in rewards.get('items', []):
+            p.add_item(item_key, cnt)
+        # 宠物经验
+        pet_exp = rewards.get('pet_exp', 0)
+        if pet_exp and p.active_pet:
+            p.add_pet_exp(p.active_pet, pet_exp)
+        # 标记完成
+        p.active_bounties = [b for b in p.active_bounties if b['bounty_id'] != bid]
+        p.completed_bounties.add(bid)
+        reward_text = f"+{rewards.get('gold', 0)}G"
+        for item_key, cnt in rewards.get('items', []):
+            reward_text += f" +{ITEMS_DB[item_key].name}x{cnt}"
+        self.message_queue.append((f"赏金完成：{bdef.name}！{reward_text}", 180))
+        px = SCREEN_W // 2
+        py = SCREEN_H // 2
+        self.particles.emit(px, py, 20, C_GOLD, 3, 50, 4, 'magic')
+
+    # ============================================================
+    # 天气/时间系统
+    # ============================================================
+    def _get_time_phase(self):
+        t = self.player.world_time % 10800
+        if t < 1800:
+            return 'dawn'
+        elif t < 5400:
+            return 'day'
+        elif t < 7200:
+            return 'dusk'
+        else:
+            return 'night'
+
+    def _update_weather_time(self):
+        """每tick更新天气和时间"""
+        p = self.player
+        p.world_time += 1
+        if p.world_time >= 10800:
+            p.world_time = 0
+        # 天气切换
+        p.weather_timer -= 1
+        if p.weather_timer <= 0:
+            roll = random.random()
+            if roll < 0.40:
+                p.weather = 'clear'
+            elif roll < 0.65:
+                p.weather = 'rain'
+            elif roll < 0.85:
+                p.weather = 'fog'
+            else:
+                p.weather = 'storm'
+            p.weather_timer = random.randint(10800, 18000)
 
     def _check_boss_trigger(self):
         """检查是否踩到Boss触发点"""
@@ -1122,6 +1481,8 @@ class Game:
 
         # 支线：佣兵委托计数
         if self.combat.state == CombatState.VICTORY:
+            # 图鉴登录
+            p.codex_monsters.add(self.combat.enemy_key)
             if p.side_quests.get('merc_hunt') == 1:
                 p.quest_counters['merc_hunt'] = p.quest_counters.get('merc_hunt', 0) + 1
                 cnt = p.quest_counters['merc_hunt']
@@ -1174,6 +1535,26 @@ class Game:
                 self._check_boss_trigger()
             self._update_camera()
             self._update_ambient_particles()
+            self._update_weather_time()
+            self.particles.update()
+            # 消息队列
+            if self.message_queue:
+                self.message_queue[0] = (self.message_queue[0][0], self.message_queue[0][1] - 1)
+                if self.message_queue[0][1] <= 0:
+                    self.message_queue.pop(0)
+
+        elif self.state == GameState.FISHING:
+            # 钓鱼指示器乒乓移动
+            if self.fishing_state == 'casting':
+                self.fishing_indicator += self.fishing_speed * self.fishing_dir * 0.016
+                if self.fishing_indicator >= 1.0:
+                    self.fishing_indicator = 1.0
+                    self.fishing_dir = -1
+                elif self.fishing_indicator <= 0.0:
+                    self.fishing_indicator = 0.0
+                    self.fishing_dir = 1
+            elif self.fishing_state == 'result':
+                self.fishing_result_timer -= 1
             self.particles.update()
             # 消息队列
             if self.message_queue:
@@ -1196,6 +1577,16 @@ class Game:
                 y = random.randint(100, SCREEN_H - 100)
                 c = random.choice([(0, 255, 200), (255, 50, 150), (180, 60, 255), (0, 255, 100)])
                 self.ending_particles.emit(x, y, 3, c, 1.5, 80, 3, 'magic')
+
+        # 消息队列处理（非EXPLORE状态也需要）
+        if self.state in (GameState.BOUNTY_BOARD, GameState.PET_MENU, GameState.COOKING,
+                          GameState.FARM, GameState.SKILL_TREE, GameState.UPGRADE_SHOP,
+                          GameState.CRAFTING, GameState.CODEX, GameState.QUEST_CHAIN,
+                          GameState.PET_BATTLE, GameState.HOME_DECOR, GameState.HACKING):
+            if self.message_queue:
+                self.message_queue[0] = (self.message_queue[0][0], self.message_queue[0][1] - 1)
+                if self.message_queue[0][1] <= 0:
+                    self.message_queue.pop(0)
 
     def _update_player_movement(self):
         keys = pygame.key.get_pressed()
@@ -1303,6 +1694,11 @@ class Game:
                     # 成就：幽灵协议 遇敌率-30%
                     if 'ghost_protocol' in self.player.achievements:
                         rate *= 0.7
+                    # 天气影响遇敌率
+                    if self.player.weather == 'fog':
+                        rate *= 1.3
+                    elif self.player.weather == 'storm':
+                        rate *= 1.5
                     if random.random() < rate:
                         # 1% 概率遇到金色史莱姆
                         if random.random() < 0.01:
@@ -1653,6 +2049,38 @@ class Game:
             self._draw_pet_menu()
         elif self.state == GameState.COOKING:
             self._draw_cooking()
+        elif self.state == GameState.FISHING:
+            self._draw_fishing()
+        elif self.state == GameState.BOUNTY_BOARD:
+            self._draw_bounty_board()
+        elif self.state == GameState.HACKING:
+            self._draw_hacking()
+        elif self.state == GameState.ARENA:
+            if self.combat:
+                self.combat.draw(self.screen)
+                # 波次HUD
+                draw_pixel_rect(self.screen, C_PANEL, (SCREEN_W//2 - 100, 4, 200, 28), 2, C_PANEL_BORDER)
+                draw_text(self.screen, f"竞技场 Wave {self.arena_wave}/{len(ARENA_WAVES)}",
+                          (SCREEN_W//2, 10), self.assets.font_md, C_GOLD, center=True)
+        elif self.state == GameState.CRAFTING:
+            self._draw_crafting()
+        elif self.state == GameState.CODEX:
+            self._draw_codex()
+        elif self.state == GameState.QUEST_CHAIN:
+            self._draw_quest_chain()
+        elif self.state == GameState.DAILY_CHALLENGE:
+            if self.combat:
+                self.combat.draw(self.screen)
+                draw_pixel_rect(self.screen, C_PANEL, (SCREEN_W//2 - 120, 4, 240, 28), 2, C_PANEL_BORDER)
+                mod_name = self.daily_modifier.name if self.daily_modifier else '?'
+                draw_text(self.screen, f"每日挑战: {mod_name}",
+                          (SCREEN_W//2, 10), self.assets.font_md, C_NEON_PINK, center=True)
+        elif self.state == GameState.PET_BATTLE:
+            self._draw_pet_battle()
+        elif self.state == GameState.HOME_DECOR:
+            self._draw_home_decor()
+        elif self.state == GameState.NG_PLUS_CONFIRM:
+            self._draw_ng_plus_confirm()
         elif self.state == GameState.GAME_OVER:
             self._draw_game_over()
         elif self.state == GameState.ENDING:
@@ -1881,6 +2309,9 @@ class Game:
         # 粒子
         self.particles.draw(self.screen, cam_x, cam_y)
 
+        # 天气/时间视觉叠加
+        self._draw_weather_overlay()
+
         # 对话框
         self.dialogue.draw(self.screen, self.player)
 
@@ -2029,6 +2460,16 @@ class Game:
             draw_text(self.screen, f"[主线] {hint}", (SCREEN_W // 2, SCREEN_H - 16),
                       self.assets.font_sm, C_GOLD, center=True)
 
+        # 天气/时间 HUD (右上角小地图下方)
+        phase = self._get_time_phase()
+        weather = self.player.weather
+        phase_icons = {'dawn': '☀', 'day': '☀', 'dusk': '☾', 'night': '☾'}
+        weather_icons = {'clear': '', 'rain': '🌧', 'fog': '🌫', 'storm': '⚡'}
+        phase_names = {'dawn': '黎明', 'day': '白天', 'dusk': '黄昏', 'night': '夜晚'}
+        weather_names = {'clear': '晴朗', 'rain': '雨天', 'fog': '迷雾', 'storm': '风暴'}
+        time_text = f"{phase_icons.get(phase, '')} {phase_names.get(phase, '')} {weather_icons.get(weather, '')} {weather_names.get(weather, '')}"
+        draw_text(self.screen, time_text, (SCREEN_W - 140, 108), self.assets.font_sm, (140, 160, 180))
+
     def _draw_minimap(self):
         mm_w, mm_h = 120, 90
         mm_x, mm_y = SCREEN_W - mm_w - 10, 10
@@ -2171,7 +2612,8 @@ class Game:
             self._draw_inventory_panel(px + 20, info_y + 220, pw - 40)
         else:
             options = ["[I] 物品", "[S] 状态", "[T] 技能树", "[F] 家园", "[P] 宠物",
-                       "[C] 烹饪", "[W] 保存", "[L] 读取", "[Q] 返回"]
+                       "[C] 烹饪", "[D] 图鉴", "[Q] 任务链",
+                       "[W] 保存", "[L] 读取", "[X] 返回"]
             for i, opt in enumerate(options):
                 color = C_YELLOW if i == self.menu_index else C_WHITE
                 prefix = ">> " if i == self.menu_index else "   "
@@ -2468,6 +2910,183 @@ class Game:
         if self.message_queue:
             msg, timer = self.message_queue[0]
             draw_text(self.screen, msg, (SCREEN_W//2, SCREEN_H - 60), self.assets.font_md, C_GOLD, center=True)
+
+    def _draw_weather_overlay(self):
+        """天气/时间视觉叠加层"""
+        phase = self._get_time_phase()
+        weather = self.player.weather
+
+        # 时间叠加
+        overlay = None
+        if phase == 'night':
+            overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+            overlay.fill((0, 0, 40, 80))
+        elif phase == 'dusk':
+            overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+            overlay.fill((40, 20, 0, 40))
+        elif phase == 'dawn':
+            overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+            overlay.fill((40, 30, 10, 30))
+        if overlay:
+            self.screen.blit(overlay, (0, 0))
+
+        # 雾
+        if weather == 'fog':
+            fog = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+            fog.fill((80, 80, 80, 60))
+            self.screen.blit(fog, (0, 0))
+
+        # 雨
+        if weather in ('rain', 'storm'):
+            for _ in range(30):
+                rx = random.randint(0, SCREEN_W)
+                ry = random.randint(0, SCREEN_H)
+                pygame.draw.line(self.screen, (100, 150, 220, 120),
+                                 (rx, ry), (rx - 3, ry + 10))
+
+        # 闪电 (storm)
+        if weather == 'storm':
+            if self.lightning_timer > 0:
+                flash = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+                flash.fill((255, 255, 255, min(100, self.lightning_timer * 30)))
+                self.screen.blit(flash, (0, 0))
+                self.lightning_timer -= 1
+            elif random.random() < 0.02:
+                self.lightning_timer = 3
+
+    def _draw_fishing(self):
+        """钓鱼小游戏界面"""
+        # 水面背景
+        self.screen.fill((5, 15, 35))
+        # 水波纹
+        for y in range(0, SCREEN_H, 8):
+            offset = int(math.sin(self.tick * 0.05 + y * 0.1) * 3)
+            c = (10 + y // 10, 30 + y // 8, 60 + y // 6)
+            pygame.draw.line(self.screen, c, (offset, y), (SCREEN_W + offset, y))
+
+        fish = FISH_DB.get(self.fishing_fish)
+        if fish:
+            # 鱼名和稀有度
+            stars = '★' * fish.rarity
+            rarity_colors = {1: C_WHITE, 2: C_YELLOW, 3: C_NEON_PURPLE}
+            draw_text(self.screen, f"{fish.name} {stars}",
+                      (SCREEN_W // 2, 80), self.assets.font_lg,
+                      rarity_colors.get(fish.rarity, C_WHITE), center=True)
+
+        if self.fishing_state == 'casting':
+            # 钓鱼条
+            bar_w, bar_h = 400, 20
+            bar_x = (SCREEN_W - bar_w) // 2
+            bar_y = SCREEN_H - 120
+            # 背景
+            pygame.draw.rect(self.screen, (20, 30, 50), (bar_x, bar_y, bar_w, bar_h))
+            pygame.draw.rect(self.screen, (60, 80, 120), (bar_x, bar_y, bar_w, bar_h), 2)
+            # 绿色catch zone
+            zone_x = bar_x + int((self.fishing_target_pos - self.fishing_catch_zone / 2) * bar_w)
+            zone_w = int(self.fishing_catch_zone * bar_w)
+            pygame.draw.rect(self.screen, (0, 180, 80), (zone_x, bar_y, zone_w, bar_h))
+            # 白色指示器
+            ind_x = bar_x + int(self.fishing_indicator * bar_w)
+            pygame.draw.rect(self.screen, C_WHITE, (ind_x - 2, bar_y - 4, 4, bar_h + 8))
+            # 提示
+            draw_text(self.screen, "按 J 收线！", (SCREEN_W // 2, bar_y + 40),
+                      self.assets.font_md, C_NEON_CYAN, center=True)
+
+        elif self.fishing_state == 'result':
+            color = C_GREEN if '钓到' in self.fishing_result else C_RED
+            draw_text(self.screen, self.fishing_result, (SCREEN_W // 2, SCREEN_H // 2),
+                      self.assets.font_lg, color, center=True)
+            draw_text(self.screen, "J:再钓  X:返回", (SCREEN_W // 2, SCREEN_H // 2 + 50),
+                      self.assets.font_md, (120, 140, 160), center=True)
+
+        # 粒子
+        self.particles.draw(self.screen, 0, 0)
+
+        # 消息
+        if self.message_queue:
+            msg, timer = self.message_queue[0]
+            draw_text(self.screen, msg, (SCREEN_W // 2, 40), self.assets.font_md, C_GOLD, center=True)
+
+        draw_text(self.screen, "X:返回", (20, SCREEN_H - 30), self.assets.font_sm, (80, 100, 120))
+
+    def _draw_bounty_board(self):
+        """悬赏板界面"""
+        self.screen.fill((10, 8, 20))
+        p = self.player
+        draw_text(self.screen, "【赏金任务板】", (SCREEN_W // 2, 20), self.assets.font_lg, C_GOLD, center=True)
+
+        board = p.bounty_board
+        if not board:
+            draw_text(self.screen, "暂无可用任务", (SCREEN_W // 2, 120), self.assets.font_md, C_WHITE, center=True)
+        else:
+            active_ids = [b['bounty_id'] for b in p.active_bounties]
+            for i, bid in enumerate(board):
+                bdef = BOUNTY_POOL.get(bid)
+                if not bdef:
+                    continue
+                y = 70 + i * 160
+                selected = i == self.bounty_index
+                border_c = C_NEON_CYAN if selected else (60, 60, 80)
+                draw_pixel_rect(self.screen, (15, 12, 30), (40, y, SCREEN_W - 80, 145), 2, border_c)
+
+                # 名称
+                color = C_YELLOW if selected else C_WHITE
+                prefix = ">> " if selected else "   "
+                draw_text(self.screen, f"{prefix}{bdef.name}", (60, y + 8), self.assets.font_md, color)
+
+                # 类型标签
+                type_labels = {'kill': '[击杀]', 'collect': '[收集]', 'survive': '[存活]'}
+                type_colors = {'kill': C_RED, 'collect': C_GREEN, 'survive': C_NEON_CYAN}
+                draw_text(self.screen, type_labels.get(bdef.bounty_type, ''),
+                          (SCREEN_W - 120, y + 8), self.assets.font_sm,
+                          type_colors.get(bdef.bounty_type, C_WHITE))
+
+                # 描述
+                draw_text(self.screen, bdef.description, (80, y + 32), self.assets.font_sm, (160, 160, 180))
+
+                # 奖励
+                rewards = bdef.rewards
+                reward_parts = [f"{rewards.get('gold', 0)}G"]
+                for item_key, cnt in rewards.get('items', []):
+                    if item_key in ITEMS_DB:
+                        reward_parts.append(f"{ITEMS_DB[item_key].name}x{cnt}")
+                draw_text(self.screen, f"奖励: {' '.join(reward_parts)}",
+                          (80, y + 54), self.assets.font_sm, C_GOLD)
+
+                # 状态/进度
+                if bid in p.completed_bounties:
+                    draw_text(self.screen, "[已完成]", (80, y + 76), self.assets.font_sm, (100, 100, 100))
+                elif bid in active_ids:
+                    ab = next(b for b in p.active_bounties if b['bounty_id'] == bid)
+                    if bdef.bounty_type == 'collect':
+                        cur = p.item_count(bdef.target)
+                        progress = min(cur, bdef.target_count)
+                    else:
+                        progress = ab['progress']
+                    total = bdef.target_count
+                    done = progress >= total
+                    pct = min(1.0, progress / total) if total > 0 else 0
+                    draw_bar(self.screen, 80, y + 80, 200, 10, pct,
+                             C_GREEN if done else C_NEON_CYAN)
+                    draw_text(self.screen, f"{progress}/{total}",
+                              (290, y + 77), self.assets.font_sm, C_WHITE)
+                    if done:
+                        draw_text(self.screen, "J:领取奖励", (400, y + 77),
+                                  self.assets.font_sm, C_YELLOW)
+                else:
+                    draw_text(self.screen, "J:接取", (80, y + 76), self.assets.font_sm, C_NEON_CYAN)
+
+                # 已接取数量
+                draw_text(self.screen, f"已接取: {len(p.active_bounties)}/3",
+                          (80, y + 100), self.assets.font_sm, (100, 120, 140))
+
+        draw_text(self.screen, "↑↓选择  J:接取/领取  X:返回", (SCREEN_W // 2, SCREEN_H - 30),
+                  self.assets.font_sm, (80, 100, 120), center=True)
+
+        # 消息
+        if self.message_queue:
+            msg, timer = self.message_queue[0]
+            draw_text(self.screen, msg, (SCREEN_W // 2, SCREEN_H - 60), self.assets.font_md, C_GOLD, center=True)
 
     def _draw_game_over(self):
         self.screen.fill(C_BLACK)

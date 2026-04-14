@@ -9,8 +9,307 @@ from game_map import (AREA_VILLAGE, AREA_FOREST, AREA_DUNGEON,
 
 
 # ============================================================
-# 状态效果
+# 钓鱼系统
 # ============================================================
+@dataclass
+class FishDef:
+    fish_id: str
+    name: str
+    rarity: int          # 1=普通 2=稀有 3=传说
+    catch_zone: float    # 0.1~0.3 判定区间
+    sell_price: int
+    areas: List[str]
+
+FISH_DB: Dict[str, FishDef] = {
+    'nano_fish':    FishDef('nano_fish', '纳米鱼', 1, 0.30, 15,
+                            [AREA_VILLAGE, AREA_FOREST, AREA_FACTORY]),
+    'data_eel':     FishDef('data_eel', '数据鳗', 1, 0.28, 20,
+                            [AREA_FOREST, AREA_DUNGEON, AREA_TUNNEL]),
+    'circuit_carp': FishDef('circuit_carp', '电路鲤', 2, 0.20, 45,
+                            [AREA_NEON_STREET, AREA_FACTORY]),
+    'quantum_bass': FishDef('quantum_bass', '量子鲈', 2, 0.18, 55,
+                            [AREA_CYBERSPACE, AREA_DUNGEON]),
+    'ghost_ray':    FishDef('ghost_ray', '幽灵鳐', 3, 0.12, 120,
+                            [AREA_CYBERSPACE, AREA_TUNNEL]),
+    'cyber_dragon': FishDef('cyber_dragon', '赛博龙鱼', 3, 0.10, 180,
+                            [AREA_CYBERSPACE]),
+}
+
+
+# ============================================================
+# 悬赏板系统
+# ============================================================
+@dataclass
+class BountyDef:
+    bounty_id: str
+    name: str
+    description: str
+    bounty_type: str     # 'kill' / 'collect' / 'survive'
+    target: str          # enemy_key 或 item_key
+    target_count: int
+    rewards: Dict        # {'gold': int, 'items': [(key, cnt)], 'pet_exp': int}
+
+BOUNTY_POOL: Dict[str, BountyDef] = {
+    'bk_slime':    BountyDef('bk_slime', '清除故障体', '击杀3只数据黏液怪', 'kill', 'slime', 3,
+                              {'gold': 60, 'items': [('hp_potion', 2)], 'pet_exp': 20}),
+    'bk_bat':      BountyDef('bk_bat', '蝙蝠猎手', '击杀4只信号蝙蝠', 'kill', 'bat', 4,
+                              {'gold': 80, 'items': [('mp_potion', 2)], 'pet_exp': 25}),
+    'bk_skeleton': BountyDef('bk_skeleton', '骨架清扫', '击杀3只废弃骨架', 'kill', 'skeleton', 3,
+                              {'gold': 100, 'items': [('antivirus', 1)], 'pet_exp': 30}),
+    'bk_glitch':   BountyDef('bk_glitch', '故障排除', '击杀3只故障机器人', 'kill', 'glitch_bot', 3,
+                              {'gold': 90, 'items': [('precision_gear', 1)], 'pet_exp': 25}),
+    'bk_virus':    BountyDef('bk_virus', '病毒清除', '击杀3只赛博病毒', 'kill', 'cyber_virus', 3,
+                              {'gold': 120, 'items': [('data_sample', 1)], 'pet_exp': 35}),
+    'bc_fish1':    BountyDef('bc_fish1', '渔获交付', '收集2条纳米鱼', 'collect', 'nano_fish', 2,
+                              {'gold': 50, 'items': [('hp_potion', 3)], 'pet_exp': 15}),
+    'bc_fish2':    BountyDef('bc_fish2', '稀有渔获', '收集1条电路鲤', 'collect', 'circuit_carp', 1,
+                              {'gold': 100, 'items': [('quantum_chip', 1)], 'pet_exp': 30}),
+    'bc_data':     BountyDef('bc_data', '数据采购', '收集3个数据样本', 'collect', 'data_sample', 3,
+                              {'gold': 80, 'items': [('mp_potion', 3)], 'pet_exp': 20}),
+    'bc_gear':     BountyDef('bc_gear', '零件回收', '收集2个精密齿轮', 'collect', 'precision_gear', 2,
+                              {'gold': 90, 'items': [('emp_grenade', 1)], 'pet_exp': 25}),
+    'bs_endure5':  BountyDef('bs_endure5', '耐久测试', '在一场战斗中存活5回合', 'survive', '', 5,
+                              {'gold': 70, 'items': [('hp_potion', 2)], 'pet_exp': 20}),
+    'bs_endure8':  BountyDef('bs_endure8', '极限耐久', '在一场战斗中存活8回合', 'survive', '', 8,
+                              {'gold': 130, 'items': [('antivirus', 2)], 'pet_exp': 35}),
+    'bs_endure12': BountyDef('bs_endure12', '铁人挑战', '在一场战斗中存活12回合', 'survive', '', 12,
+                              {'gold': 200, 'items': [('elixir', 1)], 'pet_exp': 50}),
+}
+
+
+# ============================================================
+# 装备合成/改造系统 — 随机词缀
+# ============================================================
+AFFIXES = {
+    'prefix': [
+        ('超频', {'atk_bonus': 3}),
+        ('强化', {'def_bonus': 3}),
+        ('纳米', {'hp_restore': 20}),
+        ('量子', {'atk_bonus': 2, 'def_bonus': 2}),
+        ('过载', {'atk_bonus': 5}),
+        ('护盾', {'def_bonus': 5}),
+    ],
+    'suffix': [
+        ('·改', {'atk_bonus': 2}),
+        ('·甲', {'def_bonus': 2}),
+        ('·极', {'atk_bonus': 4}),
+        ('·壁', {'def_bonus': 4}),
+        ('·源', {'atk_bonus': 1, 'def_bonus': 1}),
+    ],
+}
+
+@dataclass
+class CraftRecipe:
+    recipe_id: str
+    name: str
+    materials: Dict[str, int]   # {item_key: count}
+    result_key: str             # base item key
+    has_random_affix: bool = True
+
+CRAFT_RECIPES = {
+    'craft_blade': CraftRecipe('craft_blade', '锻造等离子刀',
+        {'precision_gear': 2, 'encrypted_data': 1}, 'iron_sword', True),
+    'craft_rifle': CraftRecipe('craft_rifle', '组装等离子步枪',
+        {'precision_gear': 3, 'data_sample': 2}, 'plasma_rifle', True),
+    'craft_armor': CraftRecipe('craft_armor', '编织纳米装甲',
+        {'encrypted_data': 3, 'precision_gear': 1}, 'nano_armor', True),
+    'craft_gloves': CraftRecipe('craft_gloves', '改造黑客手套',
+        {'data_sample': 2, 'encrypted_data': 2}, 'hacker_gloves', True),
+    'craft_ring': CraftRecipe('craft_ring', '融合神经接口',
+        {'quantum_chip': 1, 'data_sample': 1}, 'magic_ring', True),
+}
+
+
+# ============================================================
+# 黑客入侵小游戏 — 终端解谜词库
+# ============================================================
+HACK_WORDS = [
+    'CIPHER', 'KERNEL', 'DAEMON', 'SOCKET', 'BUFFER',
+    'THREAD', 'BINARY', 'VECTOR', 'MATRIX', 'SIGNAL',
+    'CRYPTO', 'NEURAL', 'PHOTON', 'QUBIT',  'PROXY',
+    'BREACH', 'DECODE', 'INJECT', 'BYPASS', 'ACCESS',
+]
+
+
+# ============================================================
+# 图鉴系统
+# ============================================================
+@dataclass
+class CodexEntry:
+    entry_id: str
+    name: str
+    category: str   # 'monster', 'fish', 'recipe'
+    description: str
+
+
+# ============================================================
+# NPC任务链 (恋爱角色专属支线)
+# ============================================================
+@dataclass
+class QuestChainStep:
+    description: str
+    objective_type: str   # 'kill', 'collect', 'talk', 'visit'
+    target: str           # enemy_key / item_key / npc_name / area
+    target_count: int = 1
+
+@dataclass
+class QuestChain:
+    chain_id: str
+    char_id: str          # 关联的恋爱角色
+    name: str
+    required_affection: int
+    steps: List[QuestChainStep] = field(default_factory=list)
+    rewards: Dict = field(default_factory=dict)  # {'gold', 'item', 'skill', 'exp'}
+
+QUEST_CHAINS: Dict[str, QuestChain] = {
+    'linyue_chain': QuestChain('linyue_chain', 'lin_yue', '数据溯源',
+        required_affection=25,
+        steps=[
+            QuestChainStep("收集3个数据样本", 'collect', 'data_sample', 3),
+            QuestChainStep("击杀2只网络病毒", 'kill', 'cyber_virus', 2),
+            QuestChainStep("前往网络空间", 'visit', AREA_CYBERSPACE),
+        ],
+        rewards={'gold': 200, 'item': ('overclock_core', 1), 'exp': 150}),
+    'xiaoyan_chain': QuestChain('xiaoyan_chain', 'xiao_yan', '机甲复原计划',
+        required_affection=25,
+        steps=[
+            QuestChainStep("收集4个精密齿轮", 'collect', 'precision_gear', 4),
+            QuestChainStep("击杀2只工厂守卫", 'kill', 'factory_guard', 2),
+            QuestChainStep("前往废弃工厂", 'visit', AREA_FACTORY),
+        ],
+        rewards={'gold': 200, 'item': ('plasma_rifle', 1), 'exp': 150}),
+    'zero_chain': QuestChain('zero_chain', 'zero', '暗网追踪',
+        required_affection=25,
+        steps=[
+            QuestChainStep("收集3个加密数据", 'collect', 'encrypted_data', 3),
+            QuestChainStep("击杀2只暗网守卫", 'kill', 'darknet_guard', 2),
+            QuestChainStep("前往黑市", 'visit', AREA_BLACK_MARKET),
+        ],
+        rewards={'gold': 250, 'item': ('virus_shield', 1), 'exp': 180}),
+    'miku_chain': QuestChain('miku_chain', 'miku', '旋律解码',
+        required_affection=25,
+        steps=[
+            QuestChainStep("收集2条数据鳗", 'collect', 'data_eel', 2),
+            QuestChainStep("击杀3只数据幽灵", 'kill', 'data_ghost', 3),
+            QuestChainStep("前往地下管道", 'visit', AREA_TUNNEL),
+        ],
+        rewards={'gold': 200, 'item': ('nano_amplifier', 1), 'exp': 150}),
+}
+
+
+# ============================================================
+# 竞技场/无尽模式 — 波次定义
+# ============================================================
+ARENA_WAVES = {
+    1: ['slime', 'slime'],
+    2: ['bat', 'bat', 'slime'],
+    3: ['skeleton', 'glitch_bot'],
+    4: ['factory_guard', 'pipe_worm', 'pipe_worm'],
+    5: ['cyber_virus'],  # 精英波
+    6: ['data_ghost', 'data_ghost', 'security_drone'],
+    7: ['darknet_guard', 'black_market_thug'],
+    8: ['factory_guard', 'factory_guard', 'skeleton'],
+    9: ['cyber_virus', 'data_ghost'],
+    10: ['firewall_guardian'],  # Boss波
+}
+
+
+# ============================================================
+# 每日挑战 — 条件修饰符
+# ============================================================
+@dataclass
+class DailyModifier:
+    mod_id: str
+    name: str
+    description: str
+    effect: Dict   # {'hp_mult': 0.5, 'no_items': True, 'atk_mult': 2.0, ...}
+
+DAILY_MODIFIERS = [
+    DailyModifier('glass_cannon', '玻璃大炮', 'HP=1，ATK×3', {'hp_set': 1, 'atk_mult': 3.0}),
+    DailyModifier('no_items', '空手道', '禁止使用道具', {'no_items': True}),
+    DailyModifier('skill_only', '纯技术流', '只能使用技能攻击', {'skill_only': True}),
+    DailyModifier('double_enemy', '双倍压力', '敌人HP和ATK×1.5', {'enemy_hp_mult': 1.5, 'enemy_atk_mult': 1.5}),
+    DailyModifier('speed_run', '极速挑战', '5回合内击杀', {'turn_limit': 5}),
+    DailyModifier('regen_enemy', '不死之躯', '敌人每回合回复10%HP', {'enemy_regen': 0.1}),
+]
+
+
+# ============================================================
+# 宠物对战系统
+# ============================================================
+@dataclass
+class PetBattleMove:
+    name: str
+    power: int
+    move_type: str   # 'attack', 'heal', 'buff', 'debuff'
+    cost: int = 0    # EN消耗
+
+PET_BATTLE_MOVES: Dict[str, List[PetBattleMove]] = {
+    'bit_byte': [
+        PetBattleMove('数据冲击', 15, 'attack'),
+        PetBattleMove('字节修复', 10, 'heal'),
+    ],
+    'nano_sprite': [
+        PetBattleMove('纳米射线', 18, 'attack'),
+        PetBattleMove('微型护盾', 8, 'buff'),
+    ],
+    'circuit_fox': [
+        PetBattleMove('电弧咬击', 20, 'attack'),
+        PetBattleMove('静电干扰', 12, 'debuff'),
+    ],
+}
+
+# NPC宠物对手
+@dataclass
+class PetBattleNPC:
+    npc_name: str
+    pet_name: str
+    pet_sprite: str
+    hp: int
+    atk: int
+    defense: int
+    moves: List[PetBattleMove]
+    reward_gold: int
+    reward_item: Optional[Tuple[str, int]] = None
+
+PET_BATTLE_NPCS = [
+    PetBattleNPC('训练师·小白', '电子鼠', 'slime', 40, 8, 3,
+        [PetBattleMove('电击', 10, 'attack'), PetBattleMove('闪避', 5, 'buff')],
+        50, ('hp_potion', 2)),
+    PetBattleNPC('驯兽师·铁柱', '钢铁蜂', 'bat', 60, 12, 5,
+        [PetBattleMove('毒针', 15, 'attack'), PetBattleMove('蜂群', 8, 'attack')],
+        80, ('mp_potion', 2)),
+    PetBattleNPC('冠军·暗影', '暗网猎犬', 'skeleton', 90, 16, 8,
+        [PetBattleMove('暗影撕咬', 22, 'attack'), PetBattleMove('暗影治愈', 15, 'heal')],
+        150, ('quantum_chip', 1)),
+]
+
+
+# ============================================================
+# 据点/家园系统 — 家具
+# ============================================================
+@dataclass
+class FurnitureDef:
+    furn_id: str
+    name: str
+    cost: int           # 金币
+    passive: Dict       # {'max_hp': 10, 'atk': 2, 'def': 2, 'exp_mult': 0.1, ...}
+    description: str
+
+FURNITURE_DB: Dict[str, FurnitureDef] = {
+    'trophy_case': FurnitureDef('trophy_case', '钓鱼奖杯柜', 200,
+        {'max_hp': 15}, '展示你的钓鱼成就 MAX_HP+15'),
+    'pet_bed': FurnitureDef('pet_bed', '宠物充电站', 250,
+        {'pet_happiness': 10}, '宠物幸福度衰减减半'),
+    'cooking_station': FurnitureDef('cooking_station', '高级烹饪台', 300,
+        {'meal_duration': 2}, '料理buff持续+2回合'),
+    'weapon_rack': FurnitureDef('weapon_rack', '武器展示架', 350,
+        {'atk': 3}, '展示你的武器收藏 ATK+3'),
+    'server_rack': FurnitureDef('server_rack', '数据服务器', 400,
+        {'exp_mult': 0.15}, '被动经验+15%'),
+    'holo_display': FurnitureDef('holo_display', '全息显示屏', 300,
+        {'def': 3}, '实时监控周围威胁 DEF+3'),
+}
 @dataclass
 class StatusEffect:
     name: str          # 'poison', 'stun', 'atk_up', 'def_up', 'regen'
@@ -105,6 +404,13 @@ ITEMS_DB = {
     'life_spring': Item("生命之泉", "life_spring", "融合消耗品，全恢复HP和EN", "consumable", hp_restore=9999, mp_restore=9999),
     # 农场物品
     'fertilizer': Item("纳米肥料", "fertilizer", "加速当前作物2倍生长速度", "material"),
+    # 鱼类物品
+    'nano_fish': Item("纳米鱼", "fish_common", "常见的小型数据生物", "material"),
+    'data_eel': Item("数据鳗", "fish_common", "在数据流中游弋的鳗鱼", "material"),
+    'circuit_carp': Item("电路鲤", "fish_rare", "体表布满电路纹路的稀有鱼", "material"),
+    'quantum_bass': Item("量子鲈", "fish_rare", "量子态闪烁的鲈鱼", "material"),
+    'ghost_ray': Item("幽灵鳐", "fish_legend", "半透明的传说级鳐鱼", "material"),
+    'cyber_dragon': Item("赛博龙鱼", "fish_legend", "数据海洋中的王者", "material"),
 }
 
 # ============================================================
@@ -136,6 +442,10 @@ MEALS_DB: Dict[str, MealDef] = {
     'quantum_soup': MealDef('quantum_soup', '量子浓汤', {'hp_potion': 1, 'mp_potion': 1}, 'hp_regen', 3, 15),
     'data_cake': MealDef('data_cake', '数据蛋糕', {'data_sample': 2}, 'all', 3, 25),
     'elixir_feast': MealDef('elixir_feast', '万灵盛宴', {'elixir': 1, 'quantum_chip': 1}, 'atk_def', 8, 30),
+    # 鱼料理
+    'data_fish_soup': MealDef('data_fish_soup', '数据鱼汤', {'nano_fish': 2}, 'hp_regen', 5, 20),
+    'eel_sashimi': MealDef('eel_sashimi', '数据鳗刺身', {'data_eel': 2}, 'atk', 7, 25),
+    'quantum_feast': MealDef('quantum_feast', '量子鱼宴', {'quantum_bass': 1, 'circuit_carp': 1}, 'all', 6, 30),
 }
 
 # ============================================================
@@ -503,9 +813,48 @@ class Player:
         self.visited_areas: Set[str] = set()
         # 暗网连战
         self.darknet_cleared: bool = False
+        # 钓鱼系统
+        self.fish_caught: Dict[str, int] = {}
+        # 天气/时间系统
+        self.world_time: int = 0
+        self.weather: str = 'clear'
+        self.weather_timer: int = 10800
+        # 悬赏板系统
+        self.active_bounties: List[Dict] = []       # [{bounty_id, progress}] 最多3个
+        self.completed_bounties: Set[str] = set()
+        self.bounty_board: List[str] = []            # 当前板上3个id
+        self.bounty_refresh_flag: bool = True
+        # v0.13 新系统
+        # 装备合成 — 已合成装备的词缀记录 {item_key: {'prefix': str, 'suffix': str, 'bonus_atk': int, 'bonus_def': int}}
+        self.crafted_affixes: Dict[str, Dict] = {}
+        # 图鉴
+        self.codex_monsters: Set[str] = set()
+        self.codex_fish: Set[str] = set()
+        self.codex_recipes: Set[str] = set()
+        # NPC任务链
+        self.quest_chains: Dict[str, Dict] = {}  # {chain_id: {'step': int, 'progress': int, 'done': bool}}
+        # 竞技场
+        self.arena_best_wave: int = 0
+        # 每日挑战
+        self.daily_completed_date: str = ''  # 'YYYY-MM-DD'
+        self.daily_best_streak: int = 0
+        self.daily_streak: int = 0
+        # 宠物对战
+        self.pet_battle_wins: int = 0
+        self.pet_battle_defeated: Set[str] = set()  # NPC names defeated
+        # 据点/家园
+        self.furniture: Set[str] = set()  # owned furniture IDs
+        # New Game+
+        self.ng_plus: int = 0  # 0=normal, 1=NG+, 2=NG++...
+        # 随机事件扩展
+        self.black_market_timer: int = 0  # >0 时黑市商人出现
 
     def get_total_atk(self):
         bonus = sum(ITEMS_DB[v].atk_bonus for v in self.equipped.values() if v)
+        # 合成词缀加成
+        for v in self.equipped.values():
+            if v and v in self.crafted_affixes:
+                bonus += self.crafted_affixes[v].get('bonus_atk', 0)
         # 技能树被动加成
         if 'atk_t1' in self.unlocked_skills:
             bonus += SKILL_TREE['atk_t1'].effect['value']
@@ -520,23 +869,36 @@ class Player:
             bonus += 3
         if 'darknet_conqueror' in self.achievements:
             bonus += 5
+        # 家具加成
+        for fid in self.furniture:
+            fd = FURNITURE_DB.get(fid)
+            if fd:
+                bonus += fd.passive.get('atk', 0)
+        # NG+加成
+        bonus += self.ng_plus * 2
         return self.stats.atk + bonus
 
     def get_total_def(self):
         bonus = sum(ITEMS_DB[v].def_bonus for v in self.equipped.values() if v)
+        for v in self.equipped.values():
+            if v and v in self.crafted_affixes:
+                bonus += self.crafted_affixes[v].get('bonus_def', 0)
         if 'def_t1' in self.unlocked_skills:
             bonus += SKILL_TREE['def_t1'].effect['value']
-        # 宠物加成
         pet_bonus = self.get_pet_bonuses()
         if pet_bonus.get('type') == 'def_boost':
             bonus += pet_bonus['value']
-        # 成就加成
         if 'iron_wall' in self.achievements:
             bonus += 6
         if 'completionist' in self.achievements:
             bonus += 3
         if 'darknet_conqueror' in self.achievements:
             bonus += 5
+        for fid in self.furniture:
+            fd = FURNITURE_DB.get(fid)
+            if fd:
+                bonus += fd.passive.get('def', 0)
+        bonus += self.ng_plus * 2
         return self.stats.defense + bonus
 
     def add_item(self, item_key, count=1):
@@ -632,6 +994,27 @@ class Player:
             'achievement_counters': self.achievement_counters,
             'visited_areas': list(self.visited_areas),
             'darknet_cleared': self.darknet_cleared,
+            'fish_caught': self.fish_caught,
+            'world_time': self.world_time,
+            'weather': self.weather,
+            'weather_timer': self.weather_timer,
+            'active_bounties': self.active_bounties,
+            'completed_bounties': list(self.completed_bounties),
+            'bounty_board': self.bounty_board,
+            # v0.13
+            'crafted_affixes': self.crafted_affixes,
+            'codex_monsters': list(self.codex_monsters),
+            'codex_fish': list(self.codex_fish),
+            'codex_recipes': list(self.codex_recipes),
+            'quest_chains': self.quest_chains,
+            'arena_best_wave': self.arena_best_wave,
+            'daily_completed_date': self.daily_completed_date,
+            'daily_best_streak': self.daily_best_streak,
+            'daily_streak': self.daily_streak,
+            'pet_battle_wins': self.pet_battle_wins,
+            'pet_battle_defeated': list(self.pet_battle_defeated),
+            'furniture': list(self.furniture),
+            'ng_plus': self.ng_plus,
         }
 
     def load_save_dict(self, d):
@@ -682,6 +1065,28 @@ class Player:
         self.achievement_counters = d.get('achievement_counters', {})
         self.visited_areas = set(d.get('visited_areas', []))
         self.darknet_cleared = d.get('darknet_cleared', False)
+        self.fish_caught = d.get('fish_caught', {})
+        self.world_time = d.get('world_time', 0)
+        self.weather = d.get('weather', 'clear')
+        self.weather_timer = d.get('weather_timer', 10800)
+        self.active_bounties = d.get('active_bounties', [])
+        self.completed_bounties = set(d.get('completed_bounties', []))
+        self.bounty_board = d.get('bounty_board', [])
+        self.bounty_refresh_flag = True
+        # v0.13
+        self.crafted_affixes = d.get('crafted_affixes', {})
+        self.codex_monsters = set(d.get('codex_monsters', []))
+        self.codex_fish = set(d.get('codex_fish', []))
+        self.codex_recipes = set(d.get('codex_recipes', []))
+        self.quest_chains = d.get('quest_chains', {})
+        self.arena_best_wave = d.get('arena_best_wave', 0)
+        self.daily_completed_date = d.get('daily_completed_date', '')
+        self.daily_best_streak = d.get('daily_best_streak', 0)
+        self.daily_streak = d.get('daily_streak', 0)
+        self.pet_battle_wins = d.get('pet_battle_wins', 0)
+        self.pet_battle_defeated = set(d.get('pet_battle_defeated', []))
+        self.furniture = set(d.get('furniture', []))
+        self.ng_plus = d.get('ng_plus', 0)
 
     def can_unlock_skill(self, skill_id: str) -> bool:
         if skill_id in self.unlocked_skills:
@@ -778,6 +1183,9 @@ class Player:
         if self.farm_step_counter >= 10:  # 每10步生长一次
             self.farm_step_counter = 0
             speed_mult = 1.0 + self.farm_level * 0.2  # Lv0:1x, Lv1:1.2x, Lv2:1.4x, Lv3:1.6x
+            # 下雨时生长+50%
+            if self.weather in ('rain', 'storm'):
+                speed_mult *= 1.5
             for plot in self.farm_plots:
                 if plot.crop_id and not plot.ready:
                     crop = CROPS_DB.get(plot.crop_id)
