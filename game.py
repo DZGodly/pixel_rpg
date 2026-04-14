@@ -33,6 +33,24 @@ from entities import (Item, ITEMS_DB, PlayerStats, Player, NPC, EnemyDef, ENEMY_
                       FURNITURE_DB)
 from combat import Combat, CombatState
 from dialogue import DialogueBox
+from systems_fishing import (start_fishing as _fishing_start,
+                             handle_fishing_event as _fishing_handle_event,
+                             draw_fishing as _fishing_draw)
+from systems_bounty import (refresh_bounty_board as _bounty_refresh,
+                            handle_bounty_event as _bounty_handle_event,
+                            draw_bounty_board as _bounty_draw)
+from systems_weather import (get_time_phase as _weather_get_phase,
+                             update_weather_time as _weather_update,
+                             draw_weather_overlay as _weather_draw_overlay,
+                             draw_sky as _weather_draw_sky)
+from systems_farm import (get_farm_plot_index as _farm_get_plot_index,
+                          handle_farm_event as _farm_handle_event,
+                          draw_farm as _farm_draw)
+from systems_pet import (handle_pet_menu_event as _pet_handle_menu_event,
+                         handle_cooking_event as _pet_handle_cooking_event,
+                         complete_expedition as _pet_complete_expedition,
+                         draw_pet_menu as _pet_draw_menu,
+                         draw_cooking as _pet_draw_cooking)
 
 # ============================================================
 # 主游戏类
@@ -1002,439 +1020,51 @@ class Game:
                 self.gift_char_id = None
 
     def _get_farm_plot_index(self, tx, ty):
-        """根据地图坐标返回菜地索引"""
-        plots_pos = []
-        for i in range(3):
-            for j in range(2):
-                fx = 3 + i * 5
-                fy = 3 + j * 5
-                plots_pos.append((fx, fy))
-                plots_pos.append((fx + 1, fy))
-        # 每块地占2格，6块地
-        for idx in range(6):
-            i, j = idx % 3, idx // 3
-            fx = 3 + i * 5
-            fy = 3 + j * 5
-            if (tx == fx or tx == fx + 1) and ty == fy:
-                return idx
-        return 0
+        return _farm_get_plot_index(self, tx, ty)
 
     def _handle_farm_event(self, event):
-        """家园种菜界面"""
-        if event.type != pygame.KEYDOWN:
-            return
-        p = self.player
-        p.init_farm()
-        num_plots = len(p.farm_plots)
-
-        if self.farm_mode == 0:  # 查看模式
-            cols = min(num_plots, 4)
-            if event.key == pygame.K_ESCAPE or event.key == pygame.K_x:
-                self.state = GameState.EXPLORE
-            elif event.key == pygame.K_LEFT:
-                self.farm_index = (self.farm_index - 1) % num_plots
-            elif event.key == pygame.K_RIGHT:
-                self.farm_index = (self.farm_index + 1) % num_plots
-            elif event.key == pygame.K_UP:
-                self.farm_index = (self.farm_index - cols) % num_plots
-            elif event.key == pygame.K_DOWN:
-                self.farm_index = (self.farm_index + cols) % num_plots
-            elif event.key in (pygame.K_RETURN, pygame.K_j):
-                plot = p.farm_plots[self.farm_index]
-                if plot.ready:
-                    # 收获
-                    crop = CROPS_DB[plot.crop_id]
-                    count = crop.harvest_count
-                    # 变异收获：farm_level>=3 有10%概率产出翻倍
-                    mutated = False
-                    if p.farm_level >= 3 and random.random() < 0.1:
-                        count *= 2
-                        mutated = True
-                    p.add_item(crop.harvest_item, count)
-                    msg = f"收获了 {ITEMS_DB[crop.harvest_item].name} x{count}！"
-                    if mutated:
-                        msg += " [变异！产出翻倍！]"
-                        px = SCREEN_W // 2
-                        py = SCREEN_H // 2
-                        self.particles.emit(px, py, 20, (255, 200, 50), 3, 50, 4, 'magic')
-                    self.message_queue.append((msg, 120))
-                    plot.crop_id = None
-                    plot.growth = 0
-                    plot.ready = False
-                    plot.fertilized = False
-                elif plot.crop_id is None:
-                    # 进入种子选择
-                    self.farm_mode = 1
-                    self.farm_seed_index = 0
-            elif event.key == pygame.K_u:
-                # 农场升级
-                upgrade_costs = {0: 300, 1: 600, 2: 1200}
-                cost = upgrade_costs.get(p.farm_level)
-                if cost is None:
-                    self.message_queue.append(("农场已满级！", 90))
-                elif p.stats.gold >= cost:
-                    p.stats.gold -= cost
-                    p.farm_level += 1
-                    p.init_farm()
-                    effects = {1: "+2地块 生长+20%", 2: "+2地块 生长+40%", 3: "+2地块 生长+60% 10%变异"}
-                    self.message_queue.append((f"农场升级到Lv{p.farm_level}！{effects[p.farm_level]} (-{cost}G)", 150))
-                else:
-                    self.message_queue.append((f"信用点不足！需要{cost}G", 90))
-            elif event.key == pygame.K_f:
-                # 施肥
-                plot = p.farm_plots[self.farm_index]
-                if plot.crop_id and not plot.ready and not plot.fertilized:
-                    if p.item_count('fertilizer') > 0:
-                        p.remove_item('fertilizer')
-                        plot.fertilized = True
-                        self.message_queue.append(("施肥成功！生长速度x2！", 120))
-                    else:
-                        self.message_queue.append(("没有纳米肥料！", 90))
-                elif plot.fertilized:
-                    self.message_queue.append(("已经施过肥了！", 90))
-                else:
-                    self.message_queue.append(("需要先种植作物！", 90))
-
-        elif self.farm_mode == 1:  # 选种子
-            seeds = list(CROPS_DB.values())
-            if event.key == pygame.K_ESCAPE or event.key == pygame.K_x:
-                self.farm_mode = 0
-            elif event.key == pygame.K_UP:
-                self.farm_seed_index = (self.farm_seed_index - 1) % len(seeds)
-            elif event.key == pygame.K_DOWN:
-                self.farm_seed_index = (self.farm_seed_index + 1) % len(seeds)
-            elif event.key in (pygame.K_RETURN, pygame.K_j):
-                crop = seeds[self.farm_seed_index]
-                if p.stats.gold >= crop.seed_price:
-                    p.stats.gold -= crop.seed_price
-                    plot = p.farm_plots[self.farm_index]
-                    plot.crop_id = crop.crop_id
-                    plot.growth = 0
-                    plot.ready = False
-                    plot.fertilized = False
-                    self.message_queue.append((f"种下了 {crop.name}！(-{crop.seed_price}G)", 120))
-                    self.farm_mode = 0
-                else:
-                    self.message_queue.append(("信用点不足！", 90))
+        _farm_handle_event(self, event)
 
     def _handle_pet_menu_event(self, event):
-        """宠物管理界面"""
-        if event.type != pygame.KEYDOWN:
-            return
-        p = self.player
-        pets_list = list(PETS_DB.values())
-
-        # 喂食子菜单
-        if self.pet_feed_mode:
-            feedable = [(k, c) for k, c in p.inventory
-                        if k in ('hp_potion', 'mp_potion', 'data_sample', 'quantum_chip')]
-            if not feedable:
-                self.pet_feed_mode = False
-                return
-            if event.key in (pygame.K_ESCAPE, pygame.K_x):
-                self.pet_feed_mode = False
-            elif event.key == pygame.K_UP:
-                self.pet_feed_index = (self.pet_feed_index - 1) % len(feedable)
-            elif event.key == pygame.K_DOWN:
-                self.pet_feed_index = (self.pet_feed_index + 1) % len(feedable)
-            elif event.key in (pygame.K_RETURN, pygame.K_j):
-                if self.pet_feed_index < len(feedable):
-                    item_key, cnt = feedable[self.pet_feed_index]
-                    pet_id = p.pets_owned[self.pet_menu_index]
-                    happiness_map = {'hp_potion': 10, 'mp_potion': 10, 'data_sample': 15, 'quantum_chip': 20}
-                    delta = happiness_map.get(item_key, 5)
-                    cur = p.pet_happiness.get(pet_id, 50)
-                    p.pet_happiness[pet_id] = min(100, cur + delta)
-                    p.remove_item(item_key)
-                    pet = PETS_DB[pet_id]
-                    self.message_queue.append((f"{pet.name}吃了{ITEMS_DB[item_key].name}！幸福度+{delta} ({p.pet_happiness[pet_id]}/100)", 120))
-                    self.pet_feed_mode = False
-            return
-
-        if self.pet_shop_mode:
-            # 宠物商店
-            if event.key == pygame.K_ESCAPE or event.key == pygame.K_x:
-                self.pet_shop_mode = False
-            elif event.key == pygame.K_UP:
-                self.pet_shop_index = (self.pet_shop_index - 1) % len(pets_list)
-            elif event.key == pygame.K_DOWN:
-                self.pet_shop_index = (self.pet_shop_index + 1) % len(pets_list)
-            elif event.key in (pygame.K_RETURN, pygame.K_j):
-                pet = pets_list[self.pet_shop_index]
-                price = 200  # 统一价格
-                if pet.pet_id in p.pets_owned:
-                    self.message_queue.append(("已经拥有这只宠物了！", 90))
-                elif p.stats.gold >= price:
-                    p.stats.gold -= price
-                    p.pets_owned.append(pet.pet_id)
-                    p.pet_happiness[pet.pet_id] = 50
-                    self.message_queue.append((f"获得了 {pet.name}！(-{price}G)", 120))
-                else:
-                    self.message_queue.append(("信用点不足！", 90))
-        else:
-            # 宠物管理
-            if event.key == pygame.K_ESCAPE or event.key == pygame.K_x:
-                self.state = GameState.EXPLORE
-            elif event.key == pygame.K_TAB:
-                self.pet_shop_mode = True
-                self.pet_shop_index = 0
-            elif p.pets_owned:
-                if event.key == pygame.K_UP:
-                    self.pet_menu_index = (self.pet_menu_index - 1) % len(p.pets_owned)
-                elif event.key == pygame.K_DOWN:
-                    self.pet_menu_index = (self.pet_menu_index + 1) % len(p.pets_owned)
-                elif event.key in (pygame.K_RETURN, pygame.K_j):
-                    pet_id = p.pets_owned[self.pet_menu_index]
-                    if p.active_pet == pet_id:
-                        p.active_pet = None
-                        self.message_queue.append(("宠物已收回。", 90))
-                    else:
-                        p.active_pet = pet_id
-                        pet = PETS_DB[pet_id]
-                        evo_name = pet.evolved_name if p.is_pet_evolved(pet_id) else pet.name
-                        self.message_queue.append((f"{evo_name} 出战！", 90))
-                elif event.key == pygame.K_f:
-                    # 喂食
-                    self.pet_feed_mode = True
-                    self.pet_feed_index = 0
-                elif event.key == pygame.K_p:
-                    # 玩耍
-                    pet_id = p.pets_owned[self.pet_menu_index]
-                    cd = p.pet_play_cooldown.get(pet_id, 0)
-                    if cd > 0:
-                        self.message_queue.append((f"玩耍冷却中...还需{cd}步", 90))
-                    else:
-                        cur = p.pet_happiness.get(pet_id, 50)
-                        p.pet_happiness[pet_id] = min(100, cur + 8)
-                        p.pet_play_cooldown[pet_id] = 500
-                        pet = PETS_DB[pet_id]
-                        self.message_queue.append((f"和{pet.name}玩耍了！幸福度+8 ({p.pet_happiness[pet_id]}/100)", 120))
-                        px = SCREEN_W // 2
-                        py = SCREEN_H // 2
-                        self.particles.emit(px, py, 15, (255, 200, 100), 2, 40, 3, 'firefly')
-                elif event.key == pygame.K_e:
-                    # 探险
-                    pet_id = p.pets_owned[self.pet_menu_index]
-                    if p.expedition:
-                        self.message_queue.append(("已有宠物在探险中！", 90))
-                    elif pet_id == p.active_pet:
-                        self.message_queue.append(("出战中的宠物不能探险！", 90))
-                    else:
-                        pet_level = p.get_pet_level(pet_id)
-                        p.expedition = {'pet_id': pet_id, 'steps_left': 1000, 'reward_tier': pet_level}
-                        pet = PETS_DB[pet_id]
-                        self.message_queue.append((f"{pet.name}出发探险了！(1000步后返回)", 120))
+        _pet_handle_menu_event(self, event)
 
     def _handle_cooking_event(self, event):
-        """烹饪界面"""
-        if event.type != pygame.KEYDOWN:
-            return
-        meals = list(MEALS_DB.values())
-        if event.key in (pygame.K_ESCAPE, pygame.K_x):
-            self.state = GameState.MENU
-        elif event.key == pygame.K_UP:
-            self.cooking_index = (self.cooking_index - 1) % len(meals)
-        elif event.key == pygame.K_DOWN:
-            self.cooking_index = (self.cooking_index + 1) % len(meals)
-        elif event.key in (pygame.K_RETURN, pygame.K_j):
-            meal = meals[self.cooking_index]
-            # 检查材料
-            can_cook = all(self.player.item_count(k) >= v for k, v in meal.materials.items())
-            if not can_cook:
-                self.message_queue.append(("材料不足！", 90))
-            else:
-                for k, v in meal.materials.items():
-                    self.player.remove_item(k, v)
-                self.player.active_meal = meal.meal_id
-                self.player.meal_buff_turns = meal.buff_turns
-                self.player.codex_recipes.add(meal.meal_id)
-                buff_desc = {'atk': f'ATK+{meal.buff_value}', 'def': f'DEF+{meal.buff_value}',
-                             'hp_regen': f'HP回复{meal.buff_value}/回合', 'all': f'全属性+{meal.buff_value}',
-                             'atk_def': f'ATK+{meal.buff_value} DEF+5'}
-                self.message_queue.append((f"烹饪了{meal.name}！{buff_desc.get(meal.buff_type, '')} {meal.buff_turns}回合", 150))
+        _pet_handle_cooking_event(self, event)
 
     # ============================================================
     # 钓鱼系统
     # ============================================================
     def _start_fishing(self):
-        """开始钓鱼"""
-        area = self.player.area
-        available = [f for f in FISH_DB.values() if area in f.areas]
-        if not available:
-            self.message_queue.append(("这里似乎没有鱼...", 90))
-            return
-        # 按rarity加权: 普通3 稀有2 传说1, night时传说+50%
-        weights = []
-        for f in available:
-            w = {1: 3, 2: 2, 3: 1}.get(f.rarity, 1)
-            if f.rarity == 3 and self._get_time_phase() == 'night':
-                w = int(w * 1.5) or 1
-            weights.append(w)
-        import random as _r
-        fish = _r.choices(available, weights=weights, k=1)[0]
-        self.fishing_fish = fish.fish_id
-        self.fishing_target_pos = random.uniform(0.2, 0.8)
-        self.fishing_catch_zone = fish.catch_zone
-        self.fishing_speed = 1.5 + (fish.rarity - 1) * 0.5
-        self.fishing_indicator = 0.0
-        self.fishing_dir = 1
-        self.fishing_state = 'casting'
-        self.fishing_result = ''
-        self.fishing_result_timer = 0
-        self.state = GameState.FISHING
+        _fishing_start(self)
 
     def _handle_fishing_event(self, event):
-        if event.type != pygame.KEYDOWN:
-            return
-        if self.fishing_state == 'casting':
-            if event.key == pygame.K_j:
-                # 判定
-                fish = FISH_DB.get(self.fishing_fish)
-                if fish:
-                    dist = abs(self.fishing_indicator - self.fishing_target_pos)
-                    if dist < self.fishing_catch_zone / 2:
-                        # 成功
-                        self.player.add_item(self.fishing_fish)
-                        self.player.fish_caught[self.fishing_fish] = self.player.fish_caught.get(self.fishing_fish, 0) + 1
-                        self.player.codex_fish.add(self.fishing_fish)
-                        self.fishing_result = f"钓到了 {fish.name}！(★{'★' * (fish.rarity - 1)})"
-                        px = SCREEN_W // 2
-                        py = SCREEN_H // 2
-                        colors = {1: (0, 200, 180), 2: (255, 200, 50), 3: (180, 60, 255)}
-                        self.particles.emit(px, py, 20, colors.get(fish.rarity, (255, 255, 255)), 3, 50, 4, 'magic')
-                    else:
-                        self.fishing_result = "鱼跑了...再试试？"
-                self.fishing_state = 'result'
-                self.fishing_result_timer = 90
-            elif event.key in (pygame.K_ESCAPE, pygame.K_x):
-                self.state = GameState.EXPLORE
-        elif self.fishing_state == 'result':
-            if event.key in (pygame.K_j, pygame.K_RETURN):
-                # 重新钓
-                self._start_fishing()
-            elif event.key in (pygame.K_ESCAPE, pygame.K_x):
-                self.state = GameState.EXPLORE
+        _fishing_handle_event(self, event)
 
     # ============================================================
     # 悬赏板系统
     # ============================================================
     def _refresh_bounty_board(self):
-        """刷新赏金板（进入酒吧时或板空时）"""
-        p = self.player
-        if p.bounty_board and not all(bid in p.completed_bounties for bid in p.bounty_board):
-            return  # 还有未完成的，不刷新
-        available = [bid for bid in BOUNTY_POOL if bid not in p.completed_bounties]
-        random.shuffle(available)
-        p.bounty_board = available[:3]
+        _bounty_refresh(self)
 
     def _handle_bounty_event(self, event):
-        if event.type != pygame.KEYDOWN:
-            return
-        p = self.player
-        board = p.bounty_board
-        if not board:
-            if event.key in (pygame.K_ESCAPE, pygame.K_x):
-                self.state = GameState.EXPLORE
-            return
-        if event.key in (pygame.K_ESCAPE, pygame.K_x):
-            self.state = GameState.EXPLORE
-        elif event.key == pygame.K_UP:
-            self.bounty_index = (self.bounty_index - 1) % len(board)
-        elif event.key == pygame.K_DOWN:
-            self.bounty_index = (self.bounty_index + 1) % len(board)
-        elif event.key in (pygame.K_j, pygame.K_RETURN):
-            if self.bounty_index < len(board):
-                bid = board[self.bounty_index]
-                bdef = BOUNTY_POOL.get(bid)
-                if not bdef:
-                    return
-                # 检查是否已接取
-                active_ids = [b['bounty_id'] for b in p.active_bounties]
-                if bid in active_ids:
-                    # 检查是否完成
-                    ab = next(b for b in p.active_bounties if b['bounty_id'] == bid)
-                    if self._is_bounty_complete(ab, bdef):
-                        # 领取奖励
-                        self._claim_bounty_reward(ab, bdef)
-                    else:
-                        self.message_queue.append(("任务尚未完成！", 90))
-                elif bid in p.completed_bounties:
-                    self.message_queue.append(("已完成此任务！", 90))
-                elif len(p.active_bounties) >= 3:
-                    self.message_queue.append(("最多同时接取3个赏金任务！", 90))
-                else:
-                    # 接取
-                    p.active_bounties.append({'bounty_id': bid, 'progress': 0})
-                    self.message_queue.append((f"接取赏金任务：{bdef.name}！", 120))
+        _bounty_handle_event(self, event)
 
     def _is_bounty_complete(self, ab, bdef):
-        if bdef.bounty_type == 'kill':
-            return ab['progress'] >= bdef.target_count
-        elif bdef.bounty_type == 'collect':
-            return self.player.item_count(bdef.target) >= bdef.target_count
-        elif bdef.bounty_type == 'survive':
-            return ab['progress'] >= bdef.target_count
-        return False
+        from systems_bounty import _is_bounty_complete
+        return _is_bounty_complete(self, ab, bdef)
 
     def _claim_bounty_reward(self, ab, bdef):
-        p = self.player
-        bid = ab['bounty_id']
-        # 扣除collect类物品
-        if bdef.bounty_type == 'collect':
-            p.remove_item(bdef.target, bdef.target_count)
-        # 发放奖励
-        rewards = bdef.rewards
-        p.stats.gold += rewards.get('gold', 0)
-        for item_key, cnt in rewards.get('items', []):
-            p.add_item(item_key, cnt)
-        # 宠物经验
-        pet_exp = rewards.get('pet_exp', 0)
-        if pet_exp and p.active_pet:
-            p.add_pet_exp(p.active_pet, pet_exp)
-        # 标记完成
-        p.active_bounties = [b for b in p.active_bounties if b['bounty_id'] != bid]
-        p.completed_bounties.add(bid)
-        reward_text = f"+{rewards.get('gold', 0)}G"
-        for item_key, cnt in rewards.get('items', []):
-            reward_text += f" +{ITEMS_DB[item_key].name}x{cnt}"
-        self.message_queue.append((f"赏金完成：{bdef.name}！{reward_text}", 180))
-        px = SCREEN_W // 2
-        py = SCREEN_H // 2
-        self.particles.emit(px, py, 20, C_GOLD, 3, 50, 4, 'magic')
+        from systems_bounty import _claim_bounty_reward
+        _claim_bounty_reward(self, ab, bdef)
 
     # ============================================================
     # 天气/时间系统
     # ============================================================
     def _get_time_phase(self):
-        t = self.player.world_time % 10800
-        if t < 1800:
-            return 'dawn'
-        elif t < 5400:
-            return 'day'
-        elif t < 7200:
-            return 'dusk'
-        else:
-            return 'night'
+        return _weather_get_phase(self)
 
     def _update_weather_time(self):
-        """每tick更新天气和时间"""
-        p = self.player
-        p.world_time += 1
-        if p.world_time >= 10800:
-            p.world_time = 0
-        # 天气切换
-        p.weather_timer -= 1
-        if p.weather_timer <= 0:
-            roll = random.random()
-            if roll < 0.40:
-                p.weather = 'clear'
-            elif roll < 0.65:
-                p.weather = 'rain'
-            elif roll < 0.85:
-                p.weather = 'fog'
-            else:
-                p.weather = 'storm'
-            p.weather_timer = random.randint(10800, 18000)
+        _weather_update(self)
 
     def _check_boss_trigger(self):
         """检查是否踩到Boss触发点"""
@@ -1757,43 +1387,7 @@ class Game:
                         self.message_queue.append((f"♥ {rc.name}：{line}", 150))
 
     def _complete_expedition(self):
-        """探险完成，发放奖励"""
-        p = self.player
-        exp = p.expedition
-        if not exp:
-            return
-        pet_id = exp['pet_id']
-        tier = exp['reward_tier']
-        pet = PETS_DB.get(pet_id)
-        pet_name = pet.name if pet else pet_id
-
-        rewards = []
-        if tier <= 2:
-            item = random.choice(['hp_potion', 'mp_potion'])
-            count = random.randint(1, 2)
-            gold = random.randint(20, 50)
-        elif tier <= 4:
-            item = random.choice(['data_sample', 'precision_gear'])
-            count = 1
-            gold = random.randint(50, 100)
-        else:
-            item = random.choice(['quantum_chip', 'encrypted_data'])
-            count = 1
-            gold = random.randint(100, 200)
-            # 稀有物品概率
-            if random.random() < 0.3:
-                p.add_item('elixir')
-                rewards.append('系统重启')
-
-        p.add_item(item, count)
-        p.stats.gold += gold
-        rewards.insert(0, f"{ITEMS_DB[item].name}x{count} +{gold}G")
-        reward_text = ' '.join(rewards)
-        self.message_queue.append((f"{pet_name}探险归来！获得{reward_text}", 180))
-        px = SCREEN_W // 2
-        py = SCREEN_H // 2
-        self.particles.emit(px, py, 20, (0, 255, 200), 3, 50, 4, 'magic')
-        p.expedition = None
+        _pet_complete_expedition(self)
 
     def _trigger_random_event(self):
         """走路时小概率触发的随机事件"""
@@ -2386,47 +1980,7 @@ class Game:
                               self.assets.font_md, color, center=True)
 
     def _draw_sky(self, area):
-        if area == AREA_VILLAGE:
-            # 数据港 - 深蓝夜空
-            top = (5, 5, 20)
-            bot = (15, 15, 35)
-        elif area == AREA_FOREST:
-            # 废墟荒地 - 暗绿
-            top = (8, 15, 10)
-            bot = (15, 25, 18)
-        elif area == AREA_NEON_STREET:
-            # 霓虹商业街 - 紫蓝
-            top = (10, 5, 25)
-            bot = (20, 12, 40)
-        elif area == AREA_FACTORY:
-            # 废弃工厂 - 暗橙
-            top = (15, 10, 5)
-            bot = (25, 18, 10)
-        elif area == AREA_CYBERSPACE:
-            # 网络空间 - 深蓝黑
-            top = (2, 2, 12)
-            bot = (8, 8, 25)
-        elif area == AREA_TUNNEL:
-            # 地下通道 - 暗棕
-            top = (12, 8, 5)
-            bot = (20, 15, 10)
-        elif area == AREA_BLACK_MARKET:
-            # 黑市 - 深紫
-            top = (8, 3, 15)
-            bot = (15, 8, 28)
-        elif area == AREA_HOME:
-            # 家园 - 暖色调
-            top = (15, 12, 8)
-            bot = (25, 20, 15)
-        else:
-            # 旧数据中心
-            top = (8, 5, 15)
-            bot = (15, 12, 25)
-
-        for y in range(SCREEN_H):
-            t = y / SCREEN_H
-            c = lerp_color(top, bot, t)
-            pygame.draw.line(self.screen, c, (0, y), (SCREEN_W, y))
+        _weather_draw_sky(self, area)
 
     def _draw_hud(self):
         st = self.player.stats
@@ -2645,448 +2199,22 @@ class Game:
                           self.assets.font_sm, (150, 150, 170))
 
     def _draw_farm(self):
-        """家园种菜界面"""
-        self.screen.fill((10, 15, 10))
-        p = self.player
-        p.init_farm()
-        num_plots = len(p.farm_plots)
-        cols = min(num_plots, 4)
-        rows = (num_plots + cols - 1) // cols
-
-        draw_text(self.screen, f"【家园 - 农场 Lv{p.farm_level}】", (SCREEN_W//2, 20), self.assets.font_lg, C_GOLD, center=True)
-        draw_text(self.screen, f"信用点: {p.stats.gold}", (SCREEN_W - 120, 20), self.assets.font_sm, C_GOLD)
-
-        plot_w, plot_h = 110, 90
-        start_x = (SCREEN_W - cols * (plot_w + 10)) // 2
-        start_y = 60
-
-        for idx in range(num_plots):
-            col, row = idx % cols, idx // cols
-            bx = start_x + col * (plot_w + 10)
-            by = start_y + row * (plot_h + 10)
-
-            selected = idx == self.farm_index
-            border_color = C_NEON_CYAN if selected else (60, 60, 60)
-            bg_color = (20, 30, 20) if not selected else (30, 45, 30)
-            draw_pixel_rect(self.screen, bg_color, (bx, by, plot_w, plot_h), 2, border_color)
-
-            plot = p.farm_plots[idx]
-            if plot.crop_id:
-                crop = CROPS_DB.get(plot.crop_id)
-                if crop:
-                    name_text = crop.name
-                    if plot.fertilized:
-                        name_text += " [肥]"
-                    draw_text(self.screen, name_text, (bx + plot_w//2, by + 5),
-                              self.assets.font_sm, C_WHITE, center=True)
-                    if plot.ready:
-                        draw_text(self.screen, "✓ 可收获!", (bx + plot_w//2, by + 28),
-                                  self.assets.font_sm, C_GREEN, center=True)
-                    else:
-                        pct = plot.growth / crop.grow_time if crop.grow_time > 0 else 0
-                        draw_bar(self.screen, bx + 8, by + 32, plot_w - 16, 8, min(1.0, pct), (80, 200, 80))
-                        draw_text(self.screen, f"{int(min(100, pct*100))}%", (bx + plot_w//2, by + 45),
-                                  self.assets.font_sm, (150, 200, 150), center=True)
-                    item = ITEMS_DB.get(crop.harvest_item)
-                    if item:
-                        draw_text(self.screen, f"→ {item.name} x{crop.harvest_count}", (bx + plot_w//2, by + 65),
-                                  self.assets.font_sm, (120, 150, 120), center=True)
-            else:
-                draw_text(self.screen, "空地", (bx + plot_w//2, by + 25),
-                          self.assets.font_sm, (80, 80, 80), center=True)
-                draw_text(self.screen, "[J] 种植", (bx + plot_w//2, by + 50),
-                          self.assets.font_sm, (100, 100, 100), center=True)
-
-        # 种子选择面板
-        if self.farm_mode == 1:
-            sw, sh = 300, 240
-            sx = SCREEN_W // 2 - sw // 2
-            sy = SCREEN_H // 2 - sh // 2
-            draw_pixel_rect(self.screen, (15, 20, 15), (sx, sy, sw, sh), 2, C_NEON_CYAN)
-            draw_text(self.screen, "【选择种子】", (sx + sw//2, sy + 10), self.assets.font_md, C_GOLD, center=True)
-            seeds = list(CROPS_DB.values())
-            for i, crop in enumerate(seeds):
-                color = C_YELLOW if i == self.farm_seed_index else C_WHITE
-                prefix = ">> " if i == self.farm_seed_index else "   "
-                draw_text(self.screen, f"{prefix}{crop.name} ({crop.seed_price}G)",
-                          (sx + 20, sy + 40 + i * 26), self.assets.font_sm, color)
-            # 选中种子的详情
-            if self.farm_seed_index < len(seeds):
-                sel = seeds[self.farm_seed_index]
-                item = ITEMS_DB.get(sel.harvest_item)
-                info = f"收获: {item.name if item else '?'} x{sel.harvest_count}"
-                draw_text(self.screen, info, (sx + 20, sy + sh - 30), self.assets.font_sm, (150, 200, 150))
-
-        # 升级信息
-        upgrade_costs = {0: 300, 1: 600, 2: 1200}
-        cost = upgrade_costs.get(p.farm_level)
-        if cost:
-            draw_text(self.screen, f"[U] 升级农场 ({cost}G)", (20, SCREEN_H - 80), self.assets.font_sm, (100, 200, 150))
-
-        # 操作提示
-        draw_text(self.screen, "方向键选择  J:种植/收获  F:施肥  U:升级  X:返回", (SCREEN_W//2, SCREEN_H - 30),
-                  self.assets.font_sm, (100, 120, 100), center=True)
-
-        # 消息
-        if self.message_queue:
-            msg, timer = self.message_queue[0]
-            draw_text(self.screen, msg, (SCREEN_W//2, SCREEN_H - 60), self.assets.font_md, C_GOLD, center=True)
+        _farm_draw(self)
 
     def _draw_pet_menu(self):
-        """宠物管理界面"""
-        self.screen.fill((10, 10, 20))
-        p = self.player
-
-        draw_text(self.screen, "【宠物管理】", (SCREEN_W//2, 20), self.assets.font_lg, C_NEON_CYAN, center=True)
-        draw_text(self.screen, f"信用点: {p.stats.gold}", (SCREEN_W - 120, 20), self.assets.font_sm, C_GOLD)
-
-        if self.pet_shop_mode:
-            # 宠物商店
-            draw_text(self.screen, "【宠物商店】(X返回)", (SCREEN_W//2, 60), self.assets.font_md, C_GOLD, center=True)
-            pets_list = list(PETS_DB.values())
-            for i, pet in enumerate(pets_list):
-                color = C_YELLOW if i == self.pet_shop_index else C_WHITE
-                owned = pet.pet_id in p.pets_owned
-                prefix = ">> " if i == self.pet_shop_index else "   "
-                status = " [已拥有]" if owned else f" (200G)"
-                draw_text(self.screen, f"{prefix}{pet.name}{status}",
-                          (80, 100 + i * 50), self.assets.font_md, color)
-                draw_text(self.screen, pet.description, (100, 125 + i * 50), self.assets.font_sm, (140, 140, 160))
-                # 被动效果
-                passive = pet.passive
-                eff_text = ""
-                if passive.get('type') == 'hp_regen': eff_text = f"被动: 每秒回复{passive['value']}HP"
-                elif passive.get('type') == 'gold_boost': eff_text = f"被动: 金币+{passive['value']}%"
-                elif passive.get('type') == 'exp_boost': eff_text = f"被动: 经验+{passive['value']}%"
-                elif passive.get('type') == 'atk_boost': eff_text = f"被动: ATK+{passive['value']}"
-                elif passive.get('type') == 'def_boost': eff_text = f"被动: DEF+{passive['value']}"
-                draw_text(self.screen, eff_text, (100, 140 + i * 50), self.assets.font_sm, C_NEON_CYAN)
-                # 精灵
-                sprite = self.assets.npc_sprites.get(pet.sprite_key)
-                if sprite:
-                    self.screen.blit(sprite, (50, 100 + i * 50))
-        elif self.pet_feed_mode and p.pets_owned:
-            # 喂食子菜单
-            pet_id = p.pets_owned[self.pet_menu_index]
-            pet = PETS_DB.get(pet_id)
-            pet_name = pet.evolved_name if pet and p.is_pet_evolved(pet_id) else (pet.name if pet else pet_id)
-            draw_text(self.screen, f"喂食 {pet_name} (X返回)", (SCREEN_W//2, 60), self.assets.font_md, C_GOLD, center=True)
-            feedable = [(k, c) for k, c in p.inventory
-                        if k in ('hp_potion', 'mp_potion', 'data_sample', 'quantum_chip')]
-            if not feedable:
-                draw_text(self.screen, "没有可喂食的物品！", (SCREEN_W//2, 120), self.assets.font_md, (150, 150, 150), center=True)
-            else:
-                happiness_map = {'hp_potion': 10, 'mp_potion': 10, 'data_sample': 15, 'quantum_chip': 20}
-                for i, (key, cnt) in enumerate(feedable):
-                    color = C_YELLOW if i == self.pet_feed_index else C_WHITE
-                    prefix = ">> " if i == self.pet_feed_index else "   "
-                    delta = happiness_map.get(key, 5)
-                    draw_text(self.screen, f"{prefix}{ITEMS_DB[key].name} x{cnt} (幸福度+{delta})",
-                              (80, 100 + i * 28), self.assets.font_sm, color)
-        else:
-            # 我的宠物
-            if not p.pets_owned:
-                draw_text(self.screen, "还没有宠物。按TAB打开宠物商店。", (SCREEN_W//2, SCREEN_H//2),
-                          self.assets.font_md, (100, 100, 120), center=True)
-            else:
-                draw_text(self.screen, "我的宠物 (TAB:商店)", (SCREEN_W//2, 60), self.assets.font_md, C_GOLD, center=True)
-                for i, pet_id in enumerate(p.pets_owned):
-                    pet = PETS_DB.get(pet_id)
-                    if not pet:
-                        continue
-                    color = C_YELLOW if i == self.pet_menu_index else C_WHITE
-                    prefix = ">> " if i == self.pet_menu_index else "   "
-                    active = " ★出战中" if p.active_pet == pet_id else ""
-                    evolved = p.is_pet_evolved(pet_id)
-                    display_name = pet.evolved_name if evolved else pet.name
-                    level = p.get_pet_level(pet_id)
-                    on_expedition = p.expedition and p.expedition['pet_id'] == pet_id
-
-                    y_base = 90 + i * 80
-                    draw_text(self.screen, f"{prefix}{display_name} Lv{level}{active}",
-                              (80, y_base), self.assets.font_md, color)
-                    if evolved:
-                        draw_text(self.screen, "[进化]", (350, y_base), self.assets.font_sm, (255, 200, 50))
-
-                    desc = pet.evolved_description if evolved else pet.description
-                    draw_text(self.screen, desc, (100, y_base + 20), self.assets.font_sm, (140, 140, 160))
-
-                    # 经验条
-                    exp = p.pet_exp.get(pet_id, 0)
-                    exp_next = level * 50
-                    exp_pct = exp / exp_next if exp_next > 0 else 0
-                    draw_bar(self.screen, 100, y_base + 36, 120, 6, min(1.0, exp_pct), (100, 200, 255))
-                    draw_text(self.screen, f"EXP:{exp}/{exp_next}", (225, y_base + 33), self.assets.font_sm, (120, 160, 200))
-
-                    # 幸福度
-                    happiness = p.pet_happiness.get(pet_id, 50)
-                    h_color = (80, 200, 80) if happiness > 80 else ((200, 200, 80) if happiness > 20 else (200, 80, 80))
-                    face = "♥" if happiness > 80 else ("~" if happiness > 20 else "...")
-                    draw_bar(self.screen, 310, y_base + 36, 80, 6, happiness / 100, h_color)
-                    draw_text(self.screen, f"{face}{happiness}", (395, y_base + 33), self.assets.font_sm, h_color)
-
-                    # 战斗技能
-                    if evolved and pet.evolved_combat_skill:
-                        skill_name, skill_val = pet.evolved_combat_skill
-                        draw_text(self.screen, f"技能: {skill_name}({skill_val})",
-                                  (100, y_base + 50), self.assets.font_sm, (100, 200, 180))
-                    elif pet.combat_skill:
-                        draw_text(self.screen, f"技能: {pet.combat_skill[0]}({pet.combat_skill[1]})",
-                                  (100, y_base + 50), self.assets.font_sm, (100, 200, 180))
-
-                    # 探险状态
-                    if on_expedition:
-                        steps_left = p.expedition['steps_left']
-                        draw_text(self.screen, f"[探险中 剩余{steps_left}步]",
-                                  (300, y_base + 50), self.assets.font_sm, (255, 180, 80))
-
-                    # 精灵
-                    sprite_key = pet.evolved_sprite_key if evolved else pet.sprite_key
-                    sprite = self.assets.npc_sprites.get(sprite_key)
-                    if not sprite:
-                        sprite = self.assets.npc_sprites.get(pet.sprite_key)
-                    if sprite:
-                        bob = int(math.sin(self.tick * 0.06 + i) * 2)
-                        self.screen.blit(sprite, (50, y_base + bob))
-
-        # 操作提示
-        draw_text(self.screen, "↑↓选择  J:出战/收回  F:喂食  P:玩耍  E:探险  TAB:商店  X:返回", (SCREEN_W//2, SCREEN_H - 30),
-                  self.assets.font_sm, (80, 100, 120), center=True)
-
-        # 消息
-        if self.message_queue:
-            msg, timer = self.message_queue[0]
-            draw_text(self.screen, msg, (SCREEN_W//2, SCREEN_H - 60), self.assets.font_md, C_GOLD, center=True)
+        _pet_draw_menu(self)
 
     def _draw_cooking(self):
-        """烹饪界面"""
-        self.screen.fill((15, 10, 10))
-        p = self.player
-
-        draw_text(self.screen, "【烹饪】", (SCREEN_W//2, 20), self.assets.font_lg, C_GOLD, center=True)
-
-        # 当前buff状态
-        if p.active_meal:
-            meal = MEALS_DB.get(p.active_meal)
-            if meal:
-                draw_text(self.screen, f"当前buff: {meal.name} (剩余{p.meal_buff_turns}回合)",
-                          (SCREEN_W//2, 50), self.assets.font_sm, C_NEON_CYAN, center=True)
-
-        meals = list(MEALS_DB.values())
-        for i, meal in enumerate(meals):
-            y = 80 + i * 70
-            selected = i == self.cooking_index
-            color = C_YELLOW if selected else C_WHITE
-            prefix = ">> " if selected else "   "
-
-            # 检查材料
-            can_cook = all(p.item_count(k) >= v for k, v in meal.materials.items())
-            if not can_cook:
-                color = (100, 100, 100)
-
-            draw_text(self.screen, f"{prefix}{meal.name}", (60, y), self.assets.font_md, color)
-
-            # 材料列表
-            mat_parts = []
-            for k, v in meal.materials.items():
-                have = p.item_count(k)
-                item_name = ITEMS_DB[k].name if k in ITEMS_DB else k
-                c = "✓" if have >= v else "✗"
-                mat_parts.append(f"{item_name}x{v}({c})")
-            draw_text(self.screen, "材料: " + " + ".join(mat_parts), (80, y + 22), self.assets.font_sm, (140, 140, 160))
-
-            # buff预览
-            buff_desc = {'atk': f'ATK+{meal.buff_value}', 'def': f'DEF+{meal.buff_value}',
-                         'hp_regen': f'HP回复{meal.buff_value}/回合', 'all': f'全属性+{meal.buff_value}',
-                         'atk_def': f'ATK+{meal.buff_value} DEF+5'}
-            draw_text(self.screen, f"效果: {buff_desc.get(meal.buff_type, '')} ({meal.buff_turns}回合)",
-                      (80, y + 40), self.assets.font_sm, (100, 200, 180))
-
-        # 操作提示
-        draw_text(self.screen, "↑↓选择  J:烹饪  X:返回", (SCREEN_W//2, SCREEN_H - 30),
-                  self.assets.font_sm, (120, 100, 100), center=True)
-
-        # 消息
-        if self.message_queue:
-            msg, timer = self.message_queue[0]
-            draw_text(self.screen, msg, (SCREEN_W//2, SCREEN_H - 60), self.assets.font_md, C_GOLD, center=True)
+        _pet_draw_cooking(self)
 
     def _draw_weather_overlay(self):
-        """天气/时间视觉叠加层"""
-        phase = self._get_time_phase()
-        weather = self.player.weather
-
-        # 时间叠加
-        overlay = None
-        if phase == 'night':
-            overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
-            overlay.fill((0, 0, 40, 80))
-        elif phase == 'dusk':
-            overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
-            overlay.fill((40, 20, 0, 40))
-        elif phase == 'dawn':
-            overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
-            overlay.fill((40, 30, 10, 30))
-        if overlay:
-            self.screen.blit(overlay, (0, 0))
-
-        # 雾
-        if weather == 'fog':
-            fog = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
-            fog.fill((80, 80, 80, 60))
-            self.screen.blit(fog, (0, 0))
-
-        # 雨
-        if weather in ('rain', 'storm'):
-            for _ in range(30):
-                rx = random.randint(0, SCREEN_W)
-                ry = random.randint(0, SCREEN_H)
-                pygame.draw.line(self.screen, (100, 150, 220, 120),
-                                 (rx, ry), (rx - 3, ry + 10))
-
-        # 闪电 (storm)
-        if weather == 'storm':
-            if self.lightning_timer > 0:
-                flash = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
-                flash.fill((255, 255, 255, min(100, self.lightning_timer * 30)))
-                self.screen.blit(flash, (0, 0))
-                self.lightning_timer -= 1
-            elif random.random() < 0.02:
-                self.lightning_timer = 3
+        _weather_draw_overlay(self)
 
     def _draw_fishing(self):
-        """钓鱼小游戏界面"""
-        # 水面背景
-        self.screen.fill((5, 15, 35))
-        # 水波纹
-        for y in range(0, SCREEN_H, 8):
-            offset = int(math.sin(self.tick * 0.05 + y * 0.1) * 3)
-            c = (10 + y // 10, 30 + y // 8, 60 + y // 6)
-            pygame.draw.line(self.screen, c, (offset, y), (SCREEN_W + offset, y))
-
-        fish = FISH_DB.get(self.fishing_fish)
-        if fish:
-            # 鱼名和稀有度
-            stars = '★' * fish.rarity
-            rarity_colors = {1: C_WHITE, 2: C_YELLOW, 3: C_NEON_PURPLE}
-            draw_text(self.screen, f"{fish.name} {stars}",
-                      (SCREEN_W // 2, 80), self.assets.font_lg,
-                      rarity_colors.get(fish.rarity, C_WHITE), center=True)
-
-        if self.fishing_state == 'casting':
-            # 钓鱼条
-            bar_w, bar_h = 400, 20
-            bar_x = (SCREEN_W - bar_w) // 2
-            bar_y = SCREEN_H - 120
-            # 背景
-            pygame.draw.rect(self.screen, (20, 30, 50), (bar_x, bar_y, bar_w, bar_h))
-            pygame.draw.rect(self.screen, (60, 80, 120), (bar_x, bar_y, bar_w, bar_h), 2)
-            # 绿色catch zone
-            zone_x = bar_x + int((self.fishing_target_pos - self.fishing_catch_zone / 2) * bar_w)
-            zone_w = int(self.fishing_catch_zone * bar_w)
-            pygame.draw.rect(self.screen, (0, 180, 80), (zone_x, bar_y, zone_w, bar_h))
-            # 白色指示器
-            ind_x = bar_x + int(self.fishing_indicator * bar_w)
-            pygame.draw.rect(self.screen, C_WHITE, (ind_x - 2, bar_y - 4, 4, bar_h + 8))
-            # 提示
-            draw_text(self.screen, "按 J 收线！", (SCREEN_W // 2, bar_y + 40),
-                      self.assets.font_md, C_NEON_CYAN, center=True)
-
-        elif self.fishing_state == 'result':
-            color = C_GREEN if '钓到' in self.fishing_result else C_RED
-            draw_text(self.screen, self.fishing_result, (SCREEN_W // 2, SCREEN_H // 2),
-                      self.assets.font_lg, color, center=True)
-            draw_text(self.screen, "J:再钓  X:返回", (SCREEN_W // 2, SCREEN_H // 2 + 50),
-                      self.assets.font_md, (120, 140, 160), center=True)
-
-        # 粒子
-        self.particles.draw(self.screen, 0, 0)
-
-        # 消息
-        if self.message_queue:
-            msg, timer = self.message_queue[0]
-            draw_text(self.screen, msg, (SCREEN_W // 2, 40), self.assets.font_md, C_GOLD, center=True)
-
-        draw_text(self.screen, "X:返回", (20, SCREEN_H - 30), self.assets.font_sm, (80, 100, 120))
+        _fishing_draw(self)
 
     def _draw_bounty_board(self):
-        """悬赏板界面"""
-        self.screen.fill((10, 8, 20))
-        p = self.player
-        draw_text(self.screen, "【赏金任务板】", (SCREEN_W // 2, 20), self.assets.font_lg, C_GOLD, center=True)
-
-        board = p.bounty_board
-        if not board:
-            draw_text(self.screen, "暂无可用任务", (SCREEN_W // 2, 120), self.assets.font_md, C_WHITE, center=True)
-        else:
-            active_ids = [b['bounty_id'] for b in p.active_bounties]
-            for i, bid in enumerate(board):
-                bdef = BOUNTY_POOL.get(bid)
-                if not bdef:
-                    continue
-                y = 70 + i * 160
-                selected = i == self.bounty_index
-                border_c = C_NEON_CYAN if selected else (60, 60, 80)
-                draw_pixel_rect(self.screen, (15, 12, 30), (40, y, SCREEN_W - 80, 145), 2, border_c)
-
-                # 名称
-                color = C_YELLOW if selected else C_WHITE
-                prefix = ">> " if selected else "   "
-                draw_text(self.screen, f"{prefix}{bdef.name}", (60, y + 8), self.assets.font_md, color)
-
-                # 类型标签
-                type_labels = {'kill': '[击杀]', 'collect': '[收集]', 'survive': '[存活]'}
-                type_colors = {'kill': C_RED, 'collect': C_GREEN, 'survive': C_NEON_CYAN}
-                draw_text(self.screen, type_labels.get(bdef.bounty_type, ''),
-                          (SCREEN_W - 120, y + 8), self.assets.font_sm,
-                          type_colors.get(bdef.bounty_type, C_WHITE))
-
-                # 描述
-                draw_text(self.screen, bdef.description, (80, y + 32), self.assets.font_sm, (160, 160, 180))
-
-                # 奖励
-                rewards = bdef.rewards
-                reward_parts = [f"{rewards.get('gold', 0)}G"]
-                for item_key, cnt in rewards.get('items', []):
-                    if item_key in ITEMS_DB:
-                        reward_parts.append(f"{ITEMS_DB[item_key].name}x{cnt}")
-                draw_text(self.screen, f"奖励: {' '.join(reward_parts)}",
-                          (80, y + 54), self.assets.font_sm, C_GOLD)
-
-                # 状态/进度
-                if bid in p.completed_bounties:
-                    draw_text(self.screen, "[已完成]", (80, y + 76), self.assets.font_sm, (100, 100, 100))
-                elif bid in active_ids:
-                    ab = next(b for b in p.active_bounties if b['bounty_id'] == bid)
-                    if bdef.bounty_type == 'collect':
-                        cur = p.item_count(bdef.target)
-                        progress = min(cur, bdef.target_count)
-                    else:
-                        progress = ab['progress']
-                    total = bdef.target_count
-                    done = progress >= total
-                    pct = min(1.0, progress / total) if total > 0 else 0
-                    draw_bar(self.screen, 80, y + 80, 200, 10, pct,
-                             C_GREEN if done else C_NEON_CYAN)
-                    draw_text(self.screen, f"{progress}/{total}",
-                              (290, y + 77), self.assets.font_sm, C_WHITE)
-                    if done:
-                        draw_text(self.screen, "J:领取奖励", (400, y + 77),
-                                  self.assets.font_sm, C_YELLOW)
-                else:
-                    draw_text(self.screen, "J:接取", (80, y + 76), self.assets.font_sm, C_NEON_CYAN)
-
-                # 已接取数量
-                draw_text(self.screen, f"已接取: {len(p.active_bounties)}/3",
-                          (80, y + 100), self.assets.font_sm, (100, 120, 140))
-
-        draw_text(self.screen, "↑↓选择  J:接取/领取  X:返回", (SCREEN_W // 2, SCREEN_H - 30),
-                  self.assets.font_sm, (80, 100, 120), center=True)
-
-        # 消息
-        if self.message_queue:
-            msg, timer = self.message_queue[0]
-            draw_text(self.screen, msg, (SCREEN_W // 2, SCREEN_H - 60), self.assets.font_md, C_GOLD, center=True)
+        _bounty_draw(self)
 
     def _draw_game_over(self):
         self.screen.fill(C_BLACK)
