@@ -30,7 +30,8 @@ from entities import (Item, ITEMS_DB, PlayerStats, Player, NPC, EnemyDef, ENEMY_
                       CRAFT_RECIPES, AFFIXES, HACK_WORDS,
                       QUEST_CHAINS, ARENA_WAVES, DAILY_MODIFIERS,
                       PET_BATTLE_MOVES, PET_BATTLE_NPCS, PetBattleMove,
-                      FURNITURE_DB)
+                      FURNITURE_DB,
+                      GraffitiDef, GRAFFITI_DB, GRAFFITI_SETS)
 from combat import Combat, CombatState
 from dialogue import DialogueBox
 from systems_fishing import (start_fishing as _fishing_start,
@@ -51,6 +52,13 @@ from systems_pet import (handle_pet_menu_event as _pet_handle_menu_event,
                          complete_expedition as _pet_complete_expedition,
                          draw_pet_menu as _pet_draw_menu,
                          draw_cooking as _pet_draw_cooking)
+from systems_render import (draw_explore as _render_draw_explore,
+                            draw_hud as _render_draw_hud,
+                            draw_minimap as _render_draw_minimap)
+from systems_interact import (interact as _interact_main,
+                              handle_npc_interact as _interact_npc,
+                              handle_romance_interact as _interact_romance,
+                              handle_gift_input as _interact_gift)
 
 # ============================================================
 # 主游戏类
@@ -151,7 +159,7 @@ class Game:
         # 装备合成
         self.craft_index = 0
         # 图鉴
-        self.codex_tab = 0  # 0=monster, 1=fish, 2=recipe
+        self.codex_tab = 0  # 0=monster, 1=fish, 2=recipe, 3=graffiti
         self.codex_scroll = 0
         # NPC任务链
         self.quest_chain_id = ''
@@ -666,358 +674,16 @@ class Game:
                 self.state = GameState.EXPLORE
 
     def _interact(self):
-        """与面前的NPC/物体交互"""
-        dx, dy = 0, 0
-        if self.player.direction == 'up': dy = -1
-        elif self.player.direction == 'down': dy = 1
-        elif self.player.direction == 'left': dx = -1
-        elif self.player.direction == 'right': dx = 1
-
-        target_tx = self.player.tx + dx
-        target_ty = self.player.ty + dy
-
-        # 检查面前一格和当前站的格子
-        check_positions = [(target_tx, target_ty), (self.player.tx, self.player.ty)]
-
-        # 幽灵商人
-        if self.player.area == AREA_FOREST:
-            for cx, cy in check_positions:
-                if self.ghost_merchant_npc.x == cx and self.ghost_merchant_npc.y == cy:
-                    # 芯片融合检测
-                    available_fusions = []
-                    for recipe in FUSION_RECIPES:
-                        materials, product_key, product_name = recipe
-                        can_fuse = all(self.player.item_count(k) >= v for k, v in materials.items())
-                        if can_fuse:
-                            available_fusions.append(recipe)
-                    if available_fusions:
-                        # 显示融合选项
-                        mat, prod_key, prod_name = available_fusions[0]
-                        mat_text = '+'.join(f"{ITEMS_DB[k].name}x{v}" for k, v in mat.items())
-                        self.ghost_merchant_npc.dialogues = [
-                            "[!] 我感应到了什么...",
-                            f"你的背包里有可以融合的材料！",
-                            f"融合：{mat_text} → {prod_name}",
-                            "（按J确认融合）",
-                        ]
-                        # 执行融合
-                        for k, v in mat.items():
-                            self.player.remove_item(k, v)
-                        self.player.add_item(prod_key)
-                        item = ITEMS_DB[prod_key]
-                        self.message_queue.append((f"[!] 芯片融合成功！获得{item.name}！", 180))
-                        px = self.player.x + TILE // 2
-                        py = self.player.y + TILE // 2
-                        self.particles.emit(px, py, 25, (180, 60, 255), 3, 50, 4, 'magic')
-                        self.particles.emit(px, py, 15, (0, 255, 200), 2, 40, 3, 'firefly')
-                    self.dialogue.start(self.ghost_merchant_npc, self.player.quest_stage)
-                    return
-
-        # 暗网守护者入口（黑市特定坐标交互）
-        if (self.player.area == AREA_BLACK_MARKET and not self.player.darknet_cleared
-                and self.player.quest_stage >= 5
-                and self.player.item_count('encrypted_data') >= 3):
-            # 黑市中心区域触发
-            if 10 <= target_tx <= 16 and 10 <= target_ty <= 14:
-                self.player.remove_item('encrypted_data', 3)
-                self.darknet_phase = 1
-                self.message_queue.append(("【暗网守护者】加密数据共鸣...暗网入口开启！", 180))
-                self.message_queue.append(("三连Boss战开始！每场间恢复部分HP/EN。", 120))
-                self.combat = Combat(self.player, 'firewall_guardian', self.assets)
-                self.state = GameState.COMBAT
-                return
-
-        # NPC
-        for npc in self.npcs:
-            if npc.area == self.player.area:
-                for cx, cy in check_positions:
-                    if npc.x == cx and npc.y == cy:
-                        self._handle_npc_interact(npc)
-                        return
-
-        # 恋爱NPC
-        for npc in self.romance_npcs:
-            if npc.area == self.player.area:
-                for cx, cy in check_positions:
-                    if npc.x == cx and npc.y == cy:
-                        self._handle_romance_interact(npc)
-                        return
-
-        # 宝箱
-        chest_key = (self.player.area, target_tx, target_ty)
-        if chest_key in self.chest_positions and chest_key not in self.chests_opened:
-            item_key, count = self.chest_positions[chest_key]
-            self.player.add_item(item_key, count)
-            self.chests_opened.add(chest_key)
-            item = ITEMS_DB[item_key]
-            self.message_queue.append((f"获得 {item.name} x{count}！", 120))
-            self.particles.emit(target_tx * TILE + 16, target_ty * TILE + 16, 15, C_GOLD, 2, 40, 3, 'magic')
-            return
-
-        # 隐藏宝箱（检测玩家当前位置和面前位置）
-        for check_key in [chest_key, (self.player.area, self.player.tx, self.player.ty)]:
-            if check_key in self.hidden_chests and check_key not in self.hidden_chests_opened:
-                item_key, count = self.hidden_chests[check_key]
-                self.player.add_item(item_key, count)
-                self.hidden_chests_opened.add(check_key)
-                item = ITEMS_DB[item_key]
-                self.message_queue.append((f"[!] 发现隐藏终端! 获得 {item.name} x{count}!", 150))
-                px = check_key[1] * TILE + 16
-                py = check_key[2] * TILE + 16
-                self.particles.emit(px, py, 25, (255, 200, 100), 3, 50, 3, 'magic')
-                self.particles.emit(px, py, 15, (0, 255, 200), 2, 40, 2, 'firefly')
-                return
-
-        # 家园：农田交互
-        if self.player.area == AREA_HOME:
-            tile = self.game_map.get_tile(AREA_HOME, target_tx, target_ty)
-            if tile == 21:  # 农田地块
-                self.state = GameState.FARM
-                # 确定是哪块地
-                plot_idx = self._get_farm_plot_index(target_tx, target_ty)
-                if plot_idx is not None:
-                    self.farm_index = plot_idx
-                self.farm_mode = 0
-                return
-            # 宠物管理台（终端机位置）
-            if target_tx == 17 and target_ty == 2:
-                self.state = GameState.PET_MENU
-                self.pet_menu_index = 0
-                return
-            # 家具/据点管理（书架位置）
-            if target_tx == 5 and target_ty == 2:
-                self.state = GameState.HOME_DECOR
-                self.home_decor_index = 0
-                return
-            # 图鉴（沙发位置）
-            if target_tx == 10 and target_ty == 2:
-                self.state = GameState.CODEX
-                self.codex_tab = 0
-                self.codex_scroll = 0
-                return
+        _interact_main(self)
 
     def _handle_npc_interact(self, npc):
-        """处理NPC交互，含任务逻辑"""
-        p = self.player
-
-        # 赏金终端 → 进入悬赏板
-        if npc.name == '赏金终端':
-            self._refresh_bounty_board()
-            self.state = GameState.BOUNTY_BOARD
-            self.bounty_index = 0
-            return
-
-        # 主线：城市管理员 - Stage 0 → 1
-        if npc.name == '城市管理员' and p.quest_stage == 0:
-            p.quest_stage = 1
-            self.message_queue.append(("【主线】前往废弃工厂，击败失控监工！", 180))
-        # 主线：AI先知 - Stage 3 → 4
-        elif npc.name == 'AI先知' and p.quest_stage == 3:
-            p.quest_stage = 4
-            self.message_queue.append(("【主线】前往网络空间中央(20,20)，击败量子霸主·真身！", 180))
-
-        # 支线：维修技师 - 零件收集
-        if npc.name == '维修技师':
-            sq = p.side_quests.get('gear_collect', 0)
-            if sq == 0:
-                p.side_quests['gear_collect'] = 1
-                p.quest_counters['gear_collect'] = p.item_count('precision_gear')
-                self.message_queue.append(("【支线】零件收集：收集3个精密齿轮", 150))
-            elif sq == 1 and p.item_count('precision_gear') >= 3:
-                p.remove_item('precision_gear', 3)
-                p.side_quests['gear_collect'] = 2
-                p.quest_flags['upgrade_unlocked'] = True
-                self.message_queue.append(("【支线完成】零件收集！解锁装备升级服务！", 180))
-
-        # 支线：数据分析师 - 数据采样
-        if npc.name == '数据分析师':
-            sq = p.side_quests.get('data_collect', 0)
-            if sq == 0:
-                p.side_quests['data_collect'] = 1
-                self.message_queue.append(("【支线】数据采样：收集2个数据样本", 150))
-            elif sq == 1 and p.item_count('data_sample') >= 2:
-                p.remove_item('data_sample', 2)
-                p.side_quests['data_collect'] = 2
-                p.stats.exp += 80
-                p.add_item('quantum_chip')
-                self.message_queue.append(("【支线完成】数据采样！获得80EXP+量子芯片！", 180))
-
-        # 支线：醉酒佣兵 - 佣兵委托
-        if npc.name == '醉酒佣兵':
-            sq = p.side_quests.get('merc_hunt', 0)
-            if sq == 0:
-                p.side_quests['merc_hunt'] = 1
-                p.quest_counters['merc_hunt'] = 0
-                self.message_queue.append(("【支线】佣兵委托：击败10个敌人", 150))
-            elif sq == 1 and p.quest_counters.get('merc_hunt', 0) >= 10:
-                p.side_quests['merc_hunt'] = 2
-                p.stats.gold += 300
-                self.message_queue.append(("【支线完成】佣兵委托！获得300信用点！", 180))
-
-        # 支线：逃亡工人 - 失踪工人
-        if npc.name == '逃亡工人':
-            sq = p.side_quests.get('missing_worker', 0)
-            if sq == 0:
-                p.side_quests['missing_worker'] = 1
-                self.message_queue.append(("【支线】失踪工人：在工厂找到工人证件", 150))
-            elif sq == 1 and p.has_item('worker_id'):
-                p.remove_item('worker_id')
-                p.side_quests['missing_worker'] = 2
-                p.stats.exp += 60
-                p.add_item('hp_potion', 5)
-                self.message_queue.append(("【支线完成】失踪工人！获得60EXP+纳米修复剂x5！", 180))
-
-        # 支线：线人·影子 - 黑市通行证
-        if npc.name == '线人·影子':
-            sq = p.side_quests.get('black_market_pass', 0)
-            if sq == 0:
-                p.side_quests['black_market_pass'] = 1
-                self.message_queue.append(("【支线】黑市通行证：收集3个加密数据", 150))
-            elif sq == 1 and p.item_count('encrypted_data') >= 3:
-                p.remove_item('encrypted_data', 3)
-                p.side_quests['black_market_pass'] = 2
-                p.quest_flags['black_market_open'] = True
-                self.message_queue.append(("【支线完成】黑市通行证！霓虹街黑市入口已解锁！", 180))
-
-        # v0.13 新NPC交互
-        if npc.name == '竞技场管理员':
-            self._start_arena()
-            return
-        if npc.name == '宠物训练师':
-            if not p.active_pet:
-                self.message_queue.append(("你需要先装备一只宠物！", 90))
-            else:
-                self._start_pet_battle()
-                return
-        if npc.name == '改造工匠':
-            self.state = GameState.CRAFTING
-            self.craft_index = 0
-            return
-        if npc.name == '每日挑战终端':
-            self._start_daily_challenge()
-            return
-
-        self.dialogue.start(npc, p.quest_stage)
+        _interact_npc(self, npc)
 
     def _handle_romance_interact(self, npc):
-        """处理恋爱NPC交互"""
-        p = self.player
-        # 找到对应的RomanceChar
-        rc = None
-        for char_id, rchar in ROMANCE_CHARS.items():
-            if rchar.name == npc.name:
-                rc = rchar
-                break
-        if not rc:
-            return
-
-        char_id = rc.char_id
-        aff = p.get_affection(char_id)
-
-        # 已有伴侣且不是这个角色
-        if p.partner and p.partner != char_id:
-            npc.dialogues = ["你已经有伴侣了...祝你们幸福。"]
-            self.dialogue.start(npc, 0)
-            return
-
-        # 已是伴侣 - 显示对话+送礼选项
-        if p.partner == char_id:
-            # 设置对话
-            best_aff = -1
-            best_lines = rc.affection_dialogues.get(0, ["..."])
-            for threshold, lines in sorted(rc.affection_dialogues.items()):
-                if threshold <= p.get_affection(char_id) and threshold > best_aff:
-                    best_aff = threshold
-                    best_lines = lines
-            npc.dialogues = best_lines + ["（按G送礼）"]
-            self.gift_char_id = char_id
-            self.dialogue.start(npc, 0)
-            return
-
-        # 增加好感度（每次交互+5）
-        new_aff = p.add_affection(char_id, 5)
-        if new_aff != aff:
-            self.message_queue.append((f"♥ {rc.name} 好感度 +5 ({new_aff}/100)", 90))
-
-        # 检查剧情事件
-        event = p.check_romance_event(char_id)
-        if event:
-            threshold, desc, reward_type = event
-            p.mark_romance_event(char_id, threshold)
-            self.message_queue.append((f"【剧情】{desc}", 180))
-            # 给奖励
-            if reward_type == 'exp':
-                p.stats.exp += 50
-                self.message_queue.append(("获得 50 EXP！", 90))
-            elif reward_type == 'item':
-                p.add_item('hp_potion', 3)
-                self.message_queue.append(("获得 纳米修复剂 x3！", 90))
-            elif reward_type == 'stat':
-                p.stats.max_hp += 10
-                p.stats.hp += 10
-                self.message_queue.append(("最大HP +10！", 90))
-            elif reward_type == 'skill':
-                p.skill_points += 1
-                self.message_queue.append(("获得 1 技能点！", 90))
-
-        # 好感度达到80，触发告白选择
-        if new_aff >= 80 and not p.partner:
-            self.romance_choice_active = True
-            self.romance_choice_char = char_id
-            self.romance_choice_index = 0
-
-        # 设置对话
-        best_aff = -1
-        best_lines = rc.affection_dialogues.get(0, ["..."])
-        for threshold, lines in sorted(rc.affection_dialogues.items()):
-            if threshold <= new_aff and threshold > best_aff:
-                best_aff = threshold
-                best_lines = lines
-        npc.dialogues = best_lines + ["（按G送礼）"]
-        self.gift_char_id = char_id
-        self.dialogue.start(npc, 0)
+        _interact_romance(self, npc)
 
     def _handle_gift_input(self, event):
-        """送礼界面输入处理"""
-        giftable = [(k, c) for k, c in self.player.inventory
-                     if ITEMS_DB[k].item_type == 'material']
-        if not giftable:
-            self.gift_mode = False
-            return
-        if event.key in (pygame.K_ESCAPE, pygame.K_x):
-            self.gift_mode = False
-        elif event.key == pygame.K_UP:
-            self.gift_index = (self.gift_index - 1) % len(giftable)
-        elif event.key == pygame.K_DOWN:
-            self.gift_index = (self.gift_index + 1) % len(giftable)
-        elif event.key in (pygame.K_RETURN, pygame.K_j):
-            if self.gift_index < len(giftable):
-                item_key, cnt = giftable[self.gift_index]
-                char_id = self.gift_char_id
-                rc = ROMANCE_CHARS.get(char_id)
-                if rc:
-                    delta, reaction = self.player.gift_to_partner_char(char_id, item_key)
-                    item_name = ITEMS_DB[item_key].name
-                    aff = self.player.get_affection(char_id)
-                    if reaction == 'liked':
-                        self.message_queue.append((f"♥ {rc.name}非常喜欢{item_name}！好感度+{delta} ({aff}/100)", 120))
-                    elif reaction == 'disliked':
-                        self.message_queue.append((f"♥ {rc.name}不太喜欢{item_name}... 好感度{delta} ({aff}/100)", 120))
-                    else:
-                        self.message_queue.append((f"♥ {rc.name}收下了{item_name}。好感度+{delta} ({aff}/100)", 120))
-                    # 检查剧情事件
-                    event_data = self.player.check_romance_event(char_id)
-                    if event_data:
-                        threshold, desc, reward_type = event_data
-                        self.player.mark_romance_event(char_id, threshold)
-                        self.message_queue.append((f"【剧情】{desc}", 180))
-                    # 检查告白
-                    if aff >= 80 and not self.player.partner:
-                        self.romance_choice_active = True
-                        self.romance_choice_char = char_id
-                        self.romance_choice_index = 0
-                self.gift_mode = False
-                self.gift_char_id = None
+        _interact_gift(self, event)
 
     def _get_farm_plot_index(self, tx, ty):
         return _farm_get_plot_index(self, tx, ty)
@@ -1745,352 +1411,16 @@ class Game:
                   (SCREEN_W//2, SCREEN_H - 60), self.assets.font_sm, (80, 100, 120), center=True)
 
     def _draw_explore(self):
-        area = self.player.area
-        cam_x, cam_y = int(self.camera_x), int(self.camera_y)
-
-        # 天空渐变
-        self._draw_sky(area)
-
-        # 地图瓦片
-        mdata = self.game_map.maps.get(area, [])
-        start_tx = max(0, cam_x // TILE)
-        start_ty = max(0, cam_y // TILE)
-        end_tx = min(self.game_map.map_w.get(area, 0), (cam_x + SCREEN_W) // TILE + 2)
-        end_ty = min(self.game_map.map_h.get(area, 0), (cam_y + SCREEN_H) // TILE + 2)
-
-        water_frame = (self.tick // 15) % 4
-
-        for ty in range(start_ty, end_ty):
-            for tx in range(start_tx, end_tx):
-                sx = tx * TILE - cam_x
-                sy = ty * TILE - cam_y
-                tile = self.game_map.get_tile(area, tx, ty)
-
-                if tile == 0:  # 金属地板变体
-                    key = 'grass2' if (tx + ty) % 3 == 0 else 'grass'
-                    self.screen.blit(self.assets.tiles[key], (sx, sy))
-                elif tile == 2:  # 数据流（动画）
-                    self.screen.blit(self.assets.tiles[f'water_{water_frame}'], (sx, sy))
-                else:
-                    entry = self._tile_map.get(tile)
-                    if entry:
-                        self.screen.blit(self.assets.tiles[entry[0]], (sx, sy))
-                        if entry[1]:
-                            self.screen.blit(self.assets.tiles[entry[1]], (sx, sy))
-
-        # 宝箱
-        for (a, cx, cy), (item_key, cnt) in self.chest_positions.items():
-            if a == area and (a, cx, cy) not in self.chests_opened:
-                sx = cx * TILE - cam_x
-                sy = cy * TILE - cam_y
-                self.screen.blit(self.assets.tiles['chest'], (sx, sy))
-
-        # 建筑（数据港和霓虹街特有）
-        if area in (AREA_VILLAGE, AREA_NEON_STREET):
-            houses = [(12, 6), (26, 8), (30, 18)]
-            for hx, hy in houses:
-                sx = hx * TILE - cam_x
-                sy = hy * TILE - cam_y
-                self.screen.blit(self.assets.tiles['house'], (sx, sy))
-
-        # NPC
-        for npc in self.npcs:
-            if npc.area == area:
-                sx = npc.x * TILE - cam_x
-                sy = npc.y * TILE - cam_y
-                sprite = self.assets.npc_sprites.get(npc.sprite_key)
-                if sprite:
-                    # NPC 轻微浮动
-                    bob = int(math.sin(self.tick * 0.05 + npc.x) * 2)
-                    self.screen.blit(sprite, (sx, sy + bob))
-                    # 名字
-                    draw_text(self.screen, npc.name, (sx + TILE//2, sy - 8),
-                              self.assets.font_sm, C_GOLD, center=True)
-                    # 交互提示
-                    dist = abs(self.player.tx - npc.x) + abs(self.player.ty - npc.y)
-                    if dist <= 2:
-                        if (self.tick // 20) % 2:
-                            # 气泡背景
-                            bw_hint = self.assets.font_sm.size("[J]")[0] + 8
-                            bh_hint = 18
-                            bx_hint = sx + TILE//2 - bw_hint//2
-                            by_hint = sy - 28
-                            pygame.draw.rect(self.screen, (30, 25, 50), (bx_hint, by_hint, bw_hint, bh_hint), border_radius=4)
-                            pygame.draw.rect(self.screen, (160, 140, 200), (bx_hint, by_hint, bw_hint, bh_hint), 1, border_radius=4)
-                            draw_text(self.screen, "[J]", (sx + TILE//2, by_hint + 1),
-                                      self.assets.font_sm, C_YELLOW, center=True)
-
-        # 幽灵商人（森林中，闪烁半透明效果）
-        if area == AREA_FOREST:
-            gx, gy = self.ghost_merchant_npc.x, self.ghost_merchant_npc.y
-            sx = gx * TILE - cam_x
-            sy = gy * TILE - cam_y
-            # 闪烁：用 sin 控制可见度，部分 tick 不显示
-            flicker = math.sin(self.tick * 0.08) * 0.5 + 0.5  # 0~1
-            if flicker > 0.2:  # 80% 时间可见
-                ghost_sprite = self.assets.npc_sprites.get('ghost_merchant')
-                if ghost_sprite:
-                    # 半透明效果
-                    alpha = int(100 + flicker * 100)  # 100~200
-                    temp = ghost_sprite.copy()
-                    temp.set_alpha(alpha)
-                    bob = int(math.sin(self.tick * 0.04 + gx) * 3)
-                    self.screen.blit(temp, (sx, sy + bob))
-                    # 名字（也半透明）
-                    name_color = (180, 140, 255)
-                    draw_text(self.screen, "???", (sx + TILE//2, sy - 8),
-                              self.assets.font_sm, name_color, center=True)
-                    # 交互提示
-                    dist = abs(self.player.tx - gx) + abs(self.player.ty - gy)
-                    if dist <= 2:
-                        if (self.tick // 15) % 2:
-                            bw_hint = self.assets.font_sm.size("[J]")[0] + 8
-                            bh_hint = 18
-                            bx_hint = sx + TILE//2 - bw_hint//2
-                            by_hint = sy - 28
-                            pygame.draw.rect(self.screen, (40, 20, 60), (bx_hint, by_hint, bw_hint, bh_hint), border_radius=4)
-                            pygame.draw.rect(self.screen, (180, 140, 220), (bx_hint, by_hint, bw_hint, bh_hint), 1, border_radius=4)
-                            draw_text(self.screen, "[J]", (sx + TILE//2, by_hint + 1),
-                                      self.assets.font_sm, (200, 160, 255), center=True)
-
-        # 恋爱NPC（带心形标记）
-        for npc in self.romance_npcs:
-            if npc.area == area:
-                sx = npc.x * TILE - cam_x
-                sy = npc.y * TILE - cam_y
-                sprite = self.assets.npc_sprites.get(npc.sprite_key)
-                if sprite:
-                    bob = int(math.sin(self.tick * 0.05 + npc.x * 3) * 2)
-                    self.screen.blit(sprite, (sx, sy + bob))
-                    # 名字（粉色）
-                    draw_text(self.screen, npc.name, (sx + TILE//2, sy - 8),
-                              self.assets.font_sm, C_NEON_PINK, center=True)
-                    # 好感度心形
-                    rc = None
-                    for cid, rchar in ROMANCE_CHARS.items():
-                        if rchar.name == npc.name:
-                            rc = rchar
-                            break
-                    if rc:
-                        aff = self.player.get_affection(rc.char_id)
-                        if aff > 0:
-                            hearts = min(5, aff // 20 + 1)
-                            heart_str = "♥" * hearts
-                            draw_text(self.screen, heart_str, (sx + TILE//2, sy - 20),
-                                      self.assets.font_sm, (255, 80, 120), center=True)
-                    # 交互提示
-                    dist = abs(self.player.tx - npc.x) + abs(self.player.ty - npc.y)
-                    if dist <= 2:
-                        if (self.tick // 20) % 2:
-                            bw_hint = self.assets.font_sm.size("[J]")[0] + 8
-                            bh_hint = 18
-                            bx_hint = sx + TILE//2 - bw_hint//2
-                            by_hint = sy - 30
-                            pygame.draw.rect(self.screen, (50, 20, 30), (bx_hint, by_hint, bw_hint, bh_hint), border_radius=4)
-                            pygame.draw.rect(self.screen, (255, 100, 150), (bx_hint, by_hint, bw_hint, bh_hint), 1, border_radius=4)
-                            draw_text(self.screen, "[J]", (sx + TILE//2, by_hint + 1),
-                                      self.assets.font_sm, (255, 150, 180), center=True)
-
-        # 玩家
-        frames = self.assets.player_frames.get(self.player.direction, [])
-        if frames:
-            frame_idx = self.player.anim_frame if self.player.moving else 0
-            psurf = frames[frame_idx % len(frames)]
-            px = int(self.player.x) - cam_x
-            py = int(self.player.y) - cam_y
-            self.screen.blit(psurf, (px, py))
-
-        # 粒子
-        self.particles.draw(self.screen, cam_x, cam_y)
-
-        # 天气/时间视觉叠加
-        self._draw_weather_overlay()
-
-        # 对话框
-        self.dialogue.draw(self.screen, self.player)
-
-        # HUD
-        self._draw_hud()
-
-        # 小地图
-        self._draw_minimap()
-
-        # 消息
-        if self.message_queue:
-            msg, timer = self.message_queue[0]
-            alpha = min(255, timer * 4)
-            draw_text(self.screen, msg, (SCREEN_W//2, 80), self.assets.font_md, C_GOLD, center=True)
-
-        # 区域名称（进入时短暂显示）
-        if self.encounter_steps < 60:
-            area_names = {AREA_VILLAGE: "数据港", AREA_FOREST: "废墟荒地", AREA_DUNGEON: "旧数据中心",
-                          AREA_NEON_STREET: "霓虹商业街", AREA_FACTORY: "废弃工厂", AREA_CYBERSPACE: "网络空间",
-                          AREA_TUNNEL: "地下通道", AREA_BLACK_MARKET: "黑市", AREA_HOME: "家园"}
-            name = area_names.get(area, "")
-            alpha = max(0, 60 - self.encounter_steps) / 60
-            c = tuple(int(255 * alpha) for _ in range(3))
-            draw_text(self.screen, name, (SCREEN_W//2, 50), self.assets.font_lg, c, center=True)
-
-        # 送礼界面覆盖层
-        if self.gift_mode and self.gift_char_id:
-            rc = ROMANCE_CHARS.get(self.gift_char_id)
-            giftable = [(k, c) for k, c in self.player.inventory
-                         if ITEMS_DB[k].item_type == 'material']
-            if rc and giftable:
-                overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
-                overlay.fill((0, 0, 0, 160))
-                self.screen.blit(overlay, (0, 0))
-                bw, bh = 320, 40 + len(giftable) * 26 + 30
-                bx = SCREEN_W // 2 - bw // 2
-                by = SCREEN_H // 2 - bh // 2
-                draw_pixel_rect(self.screen, (20, 10, 30), (bx, by, bw, bh), 2, (255, 80, 150))
-                draw_text(self.screen, f"送礼给{rc.name} (X返回)", (SCREEN_W//2, by + 12),
-                          self.assets.font_md, C_NEON_PINK, center=True)
-                for i, (key, cnt) in enumerate(giftable):
-                    item = ITEMS_DB[key]
-                    color = C_YELLOW if i == self.gift_index else C_WHITE
-                    prefix = ">> " if i == self.gift_index else "   "
-                    draw_text(self.screen, f"{prefix}{item.name} x{cnt}",
-                              (bx + 30, by + 40 + i * 26), self.assets.font_sm, color)
-
-        # 恋爱告白选择覆盖层
-        if self.romance_choice_active and self.romance_choice_char:
-            rc = ROMANCE_CHARS.get(self.romance_choice_char)
-            if rc:
-                # 半透明背景
-                overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
-                overlay.fill((0, 0, 0, 160))
-                self.screen.blit(overlay, (0, 0))
-                # 选择框
-                bw, bh = 360, 160
-                bx = SCREEN_W // 2 - bw // 2
-                by = SCREEN_H // 2 - bh // 2
-                draw_pixel_rect(self.screen, (20, 10, 30), (bx, by, bw, bh), (255, 80, 150))
-                draw_text(self.screen, f"♥ {rc.name}向你告白了 ♥", (SCREEN_W//2, by + 20),
-                          self.assets.font_md, (255, 150, 200), center=True)
-                draw_text(self.screen, "接受后将成为你的伴侣并加入队伍", (SCREEN_W//2, by + 50),
-                          self.assets.font_sm, C_WHITE, center=True)
-                draw_text(self.screen, "（注意：只能选择一位伴侣！）", (SCREEN_W//2, by + 70),
-                          self.assets.font_sm, (255, 200, 100), center=True)
-                options = ["接受", "再想想"]
-                for i, opt in enumerate(options):
-                    color = C_NEON_PINK if i == self.romance_choice_index else C_WHITE
-                    prefix = ">> " if i == self.romance_choice_index else "   "
-                    draw_text(self.screen, prefix + opt, (SCREEN_W//2, by + 105 + i * 30),
-                              self.assets.font_md, color, center=True)
+        _render_draw_explore(self)
 
     def _draw_sky(self, area):
         _weather_draw_sky(self, area)
 
     def _draw_hud(self):
-        st = self.player.stats
-        # 状态栏背景 - 赛博朋克风
-        draw_pixel_rect(self.screen, (8, 10, 25), (8, 8, 220, 60), 2, (0, 150, 130))
-
-        draw_text(self.screen, f"Lv.{st.level} 黑客", (16, 12), self.assets.font_sm, C_NEON_CYAN)
-        draw_bar(self.screen, 16, 30, 140, 10, st.hp / st.max_hp, C_HP_BAR)
-        draw_text(self.screen, f"HP {st.hp}/{st.max_hp}", (160, 28), self.assets.font_sm)
-        draw_bar(self.screen, 16, 44, 140, 10, st.mp / st.max_mp, C_MP_BAR)
-        draw_text(self.screen, f"EN {st.mp}/{st.max_mp}", (160, 42), self.assets.font_sm)
-        draw_bar(self.screen, 16, 58, 140, 8, st.exp / max(1, st.exp_next), C_EXP_BAR)
-        draw_text(self.screen, f"EXP {st.exp}/{st.exp_next}", (160, 55), self.assets.font_sm)
-
-        # 信用点
-        draw_text(self.screen, f"CR {st.gold}", (16, 74), self.assets.font_sm, C_NEON_CYAN)
-        # 技能点
-        if self.player.skill_points > 0:
-            draw_text(self.screen, f"SP:{self.player.skill_points}", (100, 74), self.assets.font_sm, C_YELLOW)
-        # 主线任务提示
-        quest_hints = {
-            0: "与城市管理员对话",
-            1: "击败工厂Boss：失控监工",
-            2: "通过地下通道到旧数据中心",
-            3: "前往网络空间找AI先知",
-            4: "击败量子霸主·真身",
-            5: "通关！自由探索",
-        }
-        hint = quest_hints.get(self.player.quest_stage, "")
-        if hint:
-            draw_text(self.screen, f"[主线] {hint}", (SCREEN_W // 2, SCREEN_H - 16),
-                      self.assets.font_sm, C_GOLD, center=True)
-
-        # 天气/时间 HUD (右上角小地图下方)
-        phase = self._get_time_phase()
-        weather = self.player.weather
-        phase_icons = {'dawn': '☀', 'day': '☀', 'dusk': '☾', 'night': '☾'}
-        weather_icons = {'clear': '', 'rain': '🌧', 'fog': '🌫', 'storm': '⚡'}
-        phase_names = {'dawn': '黎明', 'day': '白天', 'dusk': '黄昏', 'night': '夜晚'}
-        weather_names = {'clear': '晴朗', 'rain': '雨天', 'fog': '迷雾', 'storm': '风暴'}
-        time_text = f"{phase_icons.get(phase, '')} {phase_names.get(phase, '')} {weather_icons.get(weather, '')} {weather_names.get(weather, '')}"
-        draw_text(self.screen, time_text, (SCREEN_W - 140, 108), self.assets.font_sm, (140, 160, 180))
+        _render_draw_hud(self)
 
     def _draw_minimap(self):
-        mm_w, mm_h = 120, 90
-        mm_x, mm_y = SCREEN_W - mm_w - 10, 10
-        mm_surf = pygame.Surface((mm_w, mm_h), pygame.SRCALPHA)
-        mm_surf.fill((0, 0, 0, 140))
-
-        area = self.player.area
-        mw = self.game_map.map_w.get(area, 1)
-        mh = self.game_map.map_h.get(area, 1)
-        sx = mm_w / mw
-        sy = mm_h / mh
-
-        mdata = self.game_map.maps.get(area, [])
-        for ty, row in enumerate(mdata):
-            for tx, tile in enumerate(row):
-                px = int(tx * sx)
-                py = int(ty * sy)
-                pw = max(1, int(sx))
-                ph = max(1, int(sy))
-                if tile == 0 or tile == 6:
-                    c = (30, 35, 45, 180)
-                elif tile == 1:
-                    c = (0, 150, 130, 180)
-                elif tile == 2:
-                    c = (0, 100, 180, 180)
-                elif tile == 3:
-                    c = (50, 55, 65, 180)
-                elif tile == 4:
-                    c = (80, 90, 110, 180)
-                elif tile == 5:
-                    c = (20, 25, 40, 180)
-                elif tile == 7:
-                    c = (0, 255, 200, 180)
-                elif tile == 8:
-                    c = (45, 40, 35, 180)
-                elif tile == 9:
-                    c = (10, 10, 30, 180)
-                elif tile == 10:
-                    c = (20, 15, 40, 180)
-                elif tile == 19:
-                    c = (25, 22, 18, 180)
-                elif tile == 20:
-                    c = (40, 30, 22, 180)
-                elif tile == 21:
-                    c = (50, 35, 15, 180)
-                elif tile == 22:
-                    c = (60, 50, 35, 180)
-                else:
-                    c = (15, 15, 25, 180)
-                pygame.draw.rect(mm_surf, c, (px, py, pw, ph))
-
-        # 玩家位置
-        ppx = int(self.player.tx * sx)
-        ppy = int(self.player.ty * sy)
-        pygame.draw.rect(mm_surf, (0, 255, 200, 255), (ppx - 1, ppy - 1, 3, 3))
-
-        # NPC位置
-        for npc in self.npcs:
-            if npc.area == area:
-                npx = int(npc.x * sx)
-                npy = int(npc.y * sy)
-                pygame.draw.rect(mm_surf, (255, 220, 50, 255), (npx, npy, 2, 2))
-
-        # 边框
-        pygame.draw.rect(mm_surf, (140, 120, 180, 200), (0, 0, mm_w, mm_h), 2)
-
-        self.screen.blit(mm_surf, (mm_x, mm_y))
+        _render_draw_minimap(self)
 
     def _draw_menu(self):
         # 半透明遮罩
@@ -2312,6 +1642,97 @@ class Game:
             if (self.tick // 30) % 2:
                 draw_text(self.screen, "按 Enter 继续探索", (SCREEN_W//2, 400),
                           self.assets.font_md, C_NEON_CYAN, center=True)
+
+    # ============================================================
+    # 图鉴系统
+    # ============================================================
+    def _handle_codex_event(self, event):
+        if event.type != pygame.KEYDOWN:
+            return
+        if event.key in (pygame.K_ESCAPE, pygame.K_x):
+            self.state = GameState.EXPLORE
+        elif event.key == pygame.K_LEFT:
+            self.codex_tab = (self.codex_tab - 1) % 4
+            self.codex_scroll = 0
+        elif event.key == pygame.K_RIGHT:
+            self.codex_tab = (self.codex_tab + 1) % 4
+            self.codex_scroll = 0
+        elif event.key == pygame.K_UP:
+            self.codex_scroll = max(0, self.codex_scroll - 1)
+        elif event.key == pygame.K_DOWN:
+            self.codex_scroll += 1
+
+    def _draw_codex(self):
+        self.screen.fill((10, 12, 30))
+        tab_names = ['怪物', '鱼类', '料理', '涂鸦']
+        # 标签栏
+        for i, name in enumerate(tab_names):
+            tx = 40 + i * 120
+            color = C_NEON_CYAN if i == self.codex_tab else (80, 80, 100)
+            draw_text(self.screen, f"[{name}]", (tx, 20), self.assets.font_md, color)
+
+        y_start = 60
+        if self.codex_tab == 0:
+            # 怪物图鉴
+            entries = sorted(self.player.codex_monsters)
+            for i, ek in enumerate(entries[self.codex_scroll:self.codex_scroll + 12]):
+                edef = ENEMY_DEFS.get(ek)
+                if edef:
+                    draw_text(self.screen, f"{edef.name}  HP:{edef.hp} ATK:{edef.atk} DEF:{edef.defense}",
+                              (30, y_start + i * 22), self.assets.font_sm, C_WHITE)
+            draw_text(self.screen, f"已发现: {len(self.player.codex_monsters)}/{len(ENEMY_DEFS)}",
+                      (30, SCREEN_H - 30), self.assets.font_sm, C_GOLD)
+        elif self.codex_tab == 1:
+            # 鱼类图鉴
+            entries = sorted(self.player.codex_fish)
+            for i, fk in enumerate(entries[self.codex_scroll:self.codex_scroll + 12]):
+                fdef = FISH_DB.get(fk)
+                if fdef:
+                    stars = '★' * fdef.rarity + '☆' * (3 - fdef.rarity)
+                    draw_text(self.screen, f"{fdef.name}  {stars}  {fdef.sell_price}G",
+                              (30, y_start + i * 22), self.assets.font_sm, C_WHITE)
+            draw_text(self.screen, f"已发现: {len(self.player.codex_fish)}/{len(FISH_DB)}",
+                      (30, SCREEN_H - 30), self.assets.font_sm, C_GOLD)
+        elif self.codex_tab == 2:
+            # 料理图鉴
+            entries = sorted(self.player.codex_recipes)
+            for i, rk in enumerate(entries[self.codex_scroll:self.codex_scroll + 12]):
+                mdef = MEALS_DB.get(rk)
+                if mdef:
+                    draw_text(self.screen, f"{mdef.name}  {mdef.description}",
+                              (30, y_start + i * 22), self.assets.font_sm, C_WHITE)
+            draw_text(self.screen, f"已发现: {len(self.player.codex_recipes)}/{len(MEALS_DB)}",
+                      (30, SCREEN_H - 30), self.assets.font_sm, C_GOLD)
+        elif self.codex_tab == 3:
+            # 涂鸦图鉴
+            self._draw_codex_graffiti(y_start)
+
+        draw_text(self.screen, "←→切换  ↑↓翻页  X返回", (SCREEN_W // 2, SCREEN_H - 10),
+                  self.assets.font_sm, (80, 80, 100), center=True)
+
+    def _draw_codex_graffiti(self, y_start):
+        set_colors = {'origin': (0, 255, 200), 'rebellion': (255, 50, 150), 'ghost': (180, 60, 255)}
+        y = y_start
+        for set_id, sinfo in GRAFFITI_SETS.items():
+            color = set_colors.get(set_id, C_WHITE)
+            found_count = sum(1 for gid in sinfo['ids'] if gid in self.player.graffiti_found)
+            total = len(sinfo['ids'])
+            claimed = set_id in self.player.graffiti_sets_claimed
+            status = f"  ✓ {sinfo['desc']}" if claimed else ""
+            draw_text(self.screen, f"【{sinfo['name']}】 {found_count}/{total}{status}",
+                      (30, y), self.assets.font_md, color)
+            y += 26
+            for gid in sinfo['ids']:
+                gdef = GRAFFITI_DB[gid]
+                if gid in self.player.graffiti_found:
+                    draw_text(self.screen, f"  {gdef.symbol} {gdef.name} — {gdef.description}",
+                              (40, y), self.assets.font_sm, color)
+                else:
+                    draw_text(self.screen, f"  ? ??????", (40, y), self.assets.font_sm, (60, 60, 80))
+                y += 20
+            y += 8
+        draw_text(self.screen, f"总进度: {len(self.player.graffiti_found)}/{len(GRAFFITI_DB)}",
+                  (30, SCREEN_H - 30), self.assets.font_sm, C_GOLD)
 
 # ============================================================
 # 入口

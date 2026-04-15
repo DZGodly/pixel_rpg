@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.14.0 - 2026-04-15
+**新系统**: 赛博涂鸦收集系统
+
+**改动**:
+- 12个赛博涂鸦分布在各区域墙壁上，面对墙壁按J发现
+- 3个套装（起源/反叛/幽灵）各4个，集齐获得永久属性加成（+5HP/+3ATK/+3DEF）
+- 未发现涂鸦在墙上显示微弱闪烁霓虹点（sin波alpha），已发现显示明亮彩色符号（◆/✦/⚡）
+- 图鉴系统新增涂鸦页（tab 3），展示套装进度和收集列表
+- 2个新成就：涂鸦猎人（首个）、涂鸦大师（全部12个）
+- 存档/读档支持涂鸦收集状态持久化
+- 补充 Player.to_save_dict() / load_save_dict() 方法
+
+**文件**:
+- data.py: +GraffitiDef, +GRAFFITI_DB(12), +GRAFFITI_SETS(3), +GRAFFITI_POS, +2成就
+- entities.py: +graffiti_found/graffiti_sets_claimed字段, +to_save_dict(), +load_save_dict()
+- systems_interact.py: 墙壁交互检测涂鸦 + 套装完成奖励
+- systems_render.py: 涂鸦标记渲染（闪烁点/明亮符号）
+- game.py: 图鉴涂鸦tab + _handle_codex_event + _draw_codex + _draw_codex_graffiti
+
 ## v0.13.1 - 2026-04-14
 **重构**: game.py 按功能域拆分为独立模块
 
