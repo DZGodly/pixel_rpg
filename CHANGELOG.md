@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.14.1 - 2026-04-18
+**优化**: UI柔和化 + 图标修复
+
+**改动**:
+- draw_pixel_rect 改为圆角矩形(border_radius=4)，移除硬角像素块，高光改为顶部半透明渐变条
+- draw_bar 加圆角(border_radius=3)
+- draw_text 阴影从纯黑改为半透明(0,0,0,80)，视觉更柔和
+- 修复物品栏图标查找bug：鱼类物品用item.icon_key查找而非物品键，鱼/肥料图标不再显示方框
+- 新增fertilizer(纳米肥料)图标：绿色肥料瓶
+- 对话面板背景色微调(18,14,32)稍暖，HUD边框(0,130,120)稍柔
+
+**文件**:
+- constants.py: draw_pixel_rect/draw_bar/draw_text 柔化
+- game.py: 修复item_icons.get(key)→item_icons.get(item.icon_key)
+- assets.py: +fertilizer图标
+- systems_render.py: 对话/HUD面板颜色微调
+
 ## v0.14.0 - 2026-04-15
 **新系统**: 赛博涂鸦收集系统
 

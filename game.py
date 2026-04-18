@@ -1529,7 +1529,7 @@ class Game:
             color = C_YELLOW if i == self.inv_index else C_WHITE
             prefix = ">> " if i == self.inv_index else "   "
             # 图标
-            icon = self.assets.item_icons.get(key)
+            icon = self.assets.item_icons.get(item.icon_key)
             iy = y + 24 + i * 26
             if icon:
                 self.screen.blit(icon, (x + 4, iy))

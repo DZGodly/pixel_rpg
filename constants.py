@@ -44,33 +44,39 @@ def lerp_color(c1, c2, t):
 
 def draw_pixel_rect(surf, color, rect, border=2, border_color=None):
     x, y, w, h = rect
-    pygame.draw.rect(surf, color, (x, y, w, h))
+    r = 4  # 圆角半径
+    pygame.draw.rect(surf, color, (x, y, w, h), border_radius=r)
     if border_color:
-        pygame.draw.rect(surf, border_color, (x, y, w, h), border)
-    # 像素角
-    corner = border_color or color
-    for cx, cy in [(x, y), (x+w-1, y), (x, y+h-1), (x+w-1, y+h-1)]:
-        pygame.draw.rect(surf, corner, (cx, cy, 2, 2))
-    # 内角高光
-    hl = tuple(min(255, c + 30) for c in color)
-    pygame.draw.line(surf, hl, (x + 2, y + 2), (x + w - 4, y + 2))
-    pygame.draw.line(surf, hl, (x + 2, y + 2), (x + 2, y + h - 4))
+        pygame.draw.rect(surf, border_color, (x, y, w, h), border, border_radius=r)
+    # 顶部半透明渐变高光
+    hl_surf = pygame.Surface((w - 4, 6), pygame.SRCALPHA)
+    hl_color = tuple(min(255, c + 30) for c in color[:3]) + (50,)
+    hl_surf.fill(hl_color)
+    surf.blit(hl_surf, (x + 2, y + 2))
 
 def draw_text(surf, text, pos, font, color=C_WHITE, shadow=True, center=False):
     if center:
         ts = font.render(text, True, color)
         if shadow:
-            sh = font.render(text, True, (0, 0, 0))
-            surf.blit(sh, (pos[0] - ts.get_width()//2 + 1, pos[1] + 1))
+            sh_surf = pygame.Surface((ts.get_width() + 2, ts.get_height() + 2), pygame.SRCALPHA)
+            sh = font.render(text, True, (0, 0, 0, 80))
+            sh_surf.blit(sh, (0, 0))
+            surf.blit(sh_surf, (pos[0] - ts.get_width()//2 + 1, pos[1] + 1))
         surf.blit(ts, (pos[0] - ts.get_width()//2, pos[1]))
     else:
         if shadow:
-            sh = font.render(text, True, (0, 0, 0))
-            surf.blit(sh, (pos[0] + 1, pos[1] + 1))
+            ts_tmp = font.render(text, True, color)
+            sh_surf = pygame.Surface((ts_tmp.get_width() + 2, ts_tmp.get_height() + 2), pygame.SRCALPHA)
+            sh = font.render(text, True, (0, 0, 0, 80))
+            sh_surf.blit(sh, (0, 0))
+            surf.blit(sh_surf, (pos[0] + 1, pos[1] + 1))
         ts = font.render(text, True, color)
         surf.blit(ts, pos)
 
 def draw_bar(surf, x, y, w, h, ratio, color, bg=(15, 15, 25)):
-    pygame.draw.rect(surf, bg, (x, y, w, h))
-    pygame.draw.rect(surf, color, (x, y, int(w * max(0, min(1, ratio))), h))
-    pygame.draw.rect(surf, (100, 100, 140), (x, y, w, h), 1)
+    r = 3  # 圆角半径
+    pygame.draw.rect(surf, bg, (x, y, w, h), border_radius=r)
+    fw = int(w * max(0, min(1, ratio)))
+    if fw > 0:
+        pygame.draw.rect(surf, color, (x, y, fw, h), border_radius=r)
+    pygame.draw.rect(surf, (100, 100, 140), (x, y, w, h), 1, border_radius=r)

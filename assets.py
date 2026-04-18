@@ -1483,6 +1483,16 @@ class Assets:
         pygame.draw.circle(s, (255, 255, 255), (12, 4), 2)
         self.item_icons['life_spring'] = s
 
+        # --- fertilizer: 纳米肥料 - 绿色肥料瓶 ---
+        s = pygame.Surface((24, 24), pygame.SRCALPHA)
+        pygame.draw.rect(s, (30, 140, 60), (8, 6, 8, 14), border_radius=2)  # 瓶身
+        pygame.draw.rect(s, (50, 180, 80), (9, 8, 6, 10), border_radius=1)  # 高光
+        pygame.draw.rect(s, (60, 100, 40), (10, 3, 4, 4))  # 瓶口
+        pygame.draw.circle(s, (0, 255, 120), (12, 13), 2)  # 发光点
+        pygame.draw.line(s, (0, 200, 100), (6, 20), (8, 16))  # 左叶
+        pygame.draw.line(s, (0, 200, 100), (18, 20), (16, 16))  # 右叶
+        self.item_icons['fertilizer'] = s
+
         # --- fish_common: 普通鱼 - 青色小鱼 ---
         s = pygame.Surface((24, 24), pygame.SRCALPHA)
         pygame.draw.ellipse(s, (0, 180, 160), (4, 8, 16, 10))

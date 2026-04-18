@@ -234,7 +234,7 @@ def draw_explore(g):
             bw, bh = 320, 40 + len(giftable) * 26 + 30
             bx = SCREEN_W // 2 - bw // 2
             by = SCREEN_H // 2 - bh // 2
-            draw_pixel_rect(g.screen, (20, 10, 30), (bx, by, bw, bh), 2, (255, 80, 150))
+            draw_pixel_rect(g.screen, (18, 14, 32), (bx, by, bw, bh), 2, (255, 80, 150))
             draw_text(g.screen, f"送礼给{rc.name} (X返回)", (SCREEN_W//2, by + 12),
                       g.assets.font_md, C_NEON_PINK, center=True)
             for i, (key, cnt) in enumerate(giftable):
@@ -256,7 +256,7 @@ def draw_explore(g):
             bw, bh = 360, 160
             bx = SCREEN_W // 2 - bw // 2
             by = SCREEN_H // 2 - bh // 2
-            draw_pixel_rect(g.screen, (20, 10, 30), (bx, by, bw, bh), (255, 80, 150))
+            draw_pixel_rect(g.screen, (18, 14, 32), (bx, by, bw, bh), (255, 80, 150))
             draw_text(g.screen, f"♥ {rc.name}向你告白了 ♥", (SCREEN_W//2, by + 20),
                       g.assets.font_md, (255, 150, 200), center=True)
             draw_text(g.screen, "接受后将成为你的伴侣并加入队伍", (SCREEN_W//2, by + 50),
@@ -275,7 +275,7 @@ def draw_hud(g):
     """HUD绘制"""
     st = g.player.stats
     # 状态栏背景 - 赛博朋克风
-    draw_pixel_rect(g.screen, (8, 10, 25), (8, 8, 220, 60), 2, (0, 150, 130))
+    draw_pixel_rect(g.screen, (8, 10, 25), (8, 8, 220, 60), 2, (0, 130, 120))
 
     draw_text(g.screen, f"Lv.{st.level} 黑客", (16, 12), g.assets.font_sm, C_NEON_CYAN)
     draw_bar(g.screen, 16, 30, 140, 10, st.hp / st.max_hp, C_HP_BAR)
