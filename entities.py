@@ -576,6 +576,43 @@ class Player:
         self.remove_item(item_key)
         return (delta, reaction)
 
+    # --- 兼容别名 / 缺失方法 ---
+
+    def farm_tick(self):
+        self.farm_step_counter += 1
+        if self.farm_step_counter >= 10:
+            self.farm_step_counter = 0
+            self.update_farm()
+
+    def get_pet_bonuses(self) -> Dict:
+        passive = self.get_active_pet_passive()
+        if not passive:
+            return {}
+        result = dict(passive)
+        happiness = self.pet_happiness.get(self.active_pet, 50)
+        if happiness > 80:
+            result['value'] = int(result.get('value', 0) * 1.5)
+        return result
+
+    def get_combat_skills(self) -> List[Tuple[str, int, int]]:
+        return self.get_available_skills()
+
+    def commit_partner(self, char_id: str):
+        rc = ROMANCE_CHARS[char_id]
+        self.partner = char_id
+        self.partner_hp = rc.combat_hp
+
+    def add_partner_exp(self, amount: int) -> Optional[int]:
+        if not self.partner:
+            return None
+        self.partner_exp += amount
+        leveled = False
+        while self.partner_exp >= self.partner_level * 40:
+            self.partner_exp -= self.partner_level * 40
+            self.partner_level += 1
+            leveled = True
+        return self.partner_level if leveled else None
+
 
 # ============================================================
 # NPC

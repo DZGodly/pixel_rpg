@@ -477,8 +477,13 @@ class Game:
                 if event.type == pygame.QUIT:
                     running = False
                 self._handle_event(event)
-            self._update()
-            self._draw()
+            try:
+                self._update()
+                self._draw()
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                running = False
             pygame.display.flip()
         pygame.quit()
         sys.exit()
