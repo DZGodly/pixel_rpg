@@ -13,6 +13,79 @@ from entities import ITEMS_DB, ROMANCE_CHARS
 from data import GRAFFITI_DB, GRAFFITI_SETS
 
 
+# ============================================================
+# 主线任务路标系统
+# ============================================================
+# 每个 quest_stage 的目标: (目标区域, 目标tx, 目标ty, 标签)
+# 如果玩家不在目标区域，箭头指向通往目标区域的传送点
+_QUEST_WAYPOINTS = {
+    0: (AREA_VILLAGE, 18, 12, "管理员"),       # 城市管理员
+    1: (AREA_FACTORY, 35, 30, "Boss"),         # 工厂Boss
+    2: (AREA_TUNNEL, 20, 12, "密道"),          # 地下通道
+    3: (AREA_CYBERSPACE, 20, 5, "AI先知"),     # AI先知
+    4: (AREA_CYBERSPACE, 20, 20, "Boss"),      # 量子霸主
+}
+
+# 区域间路径：从A到B应该走哪个区域中转
+# (from_area, to_area) → 下一跳区域
+_AREA_ROUTE = {
+    # 到工厂
+    (AREA_VILLAGE, AREA_FACTORY): AREA_FACTORY,
+    (AREA_FOREST, AREA_FACTORY): AREA_VILLAGE,
+    (AREA_NEON_STREET, AREA_FACTORY): AREA_VILLAGE,
+    (AREA_CYBERSPACE, AREA_FACTORY): AREA_VILLAGE,
+    (AREA_DUNGEON, AREA_FACTORY): AREA_TUNNEL,
+    # 到隧道
+    (AREA_FACTORY, AREA_TUNNEL): AREA_TUNNEL,
+    (AREA_VILLAGE, AREA_TUNNEL): AREA_FACTORY,
+    (AREA_FOREST, AREA_TUNNEL): AREA_VILLAGE,
+    (AREA_NEON_STREET, AREA_TUNNEL): AREA_VILLAGE,
+    (AREA_CYBERSPACE, AREA_TUNNEL): AREA_VILLAGE,
+    (AREA_DUNGEON, AREA_TUNNEL): AREA_TUNNEL,
+    # 到网络空间
+    (AREA_VILLAGE, AREA_CYBERSPACE): AREA_CYBERSPACE,
+    (AREA_FOREST, AREA_CYBERSPACE): AREA_VILLAGE,
+    (AREA_NEON_STREET, AREA_CYBERSPACE): AREA_VILLAGE,
+    (AREA_FACTORY, AREA_CYBERSPACE): AREA_VILLAGE,
+    (AREA_DUNGEON, AREA_CYBERSPACE): AREA_TUNNEL,
+    (AREA_TUNNEL, AREA_CYBERSPACE): AREA_VILLAGE,
+    # 到数据港
+    (AREA_FOREST, AREA_VILLAGE): AREA_VILLAGE,
+    (AREA_NEON_STREET, AREA_VILLAGE): AREA_VILLAGE,
+    (AREA_FACTORY, AREA_VILLAGE): AREA_VILLAGE,
+    (AREA_CYBERSPACE, AREA_VILLAGE): AREA_VILLAGE,
+    # 到废墟荒地
+    (AREA_VILLAGE, AREA_FOREST): AREA_FOREST,
+    # 到旧数据中心
+    (AREA_TUNNEL, AREA_DUNGEON): AREA_DUNGEON,
+    (AREA_VILLAGE, AREA_DUNGEON): AREA_FACTORY,
+    (AREA_FACTORY, AREA_DUNGEON): AREA_TUNNEL,
+}
+
+
+def _get_waypoint_target(g):
+    """获取当前任务的导航目标坐标，返回 (tx, ty) 或 None"""
+    wp = _QUEST_WAYPOINTS.get(g.player.quest_stage)
+    if not wp:
+        return None
+    target_area, target_tx, target_ty, _label = wp
+    cur_area = g.player.area
+
+    if cur_area == target_area:
+        return target_tx, target_ty
+
+    # 不在目标区域 → 找通往目标区域的传送点
+    next_area = _AREA_ROUTE.get((cur_area, target_area))
+    if not next_area:
+        return None
+
+    transitions = g.game_map.transitions.get(cur_area, [])
+    for t in transitions:
+        if t[2] == next_area:
+            return t[0], t[1]
+    return None
+
+
 def draw_explore(g):
     """探索界面主绘制"""
     area = g.player.area
@@ -304,6 +377,11 @@ def draw_hud(g):
         draw_text(g.screen, f"[主线] {hint}", (SCREEN_W // 2, SCREEN_H - 16),
                   g.assets.font_sm, C_GOLD, center=True)
 
+    # 方向指示箭头
+    wp_target = _get_waypoint_target(g)
+    if wp_target:
+        _draw_direction_arrow(g, wp_target)
+
     # 天气/时间 HUD (右上角小地图下方)
     phase = g._get_time_phase()
     weather = g.player.weather
@@ -313,6 +391,51 @@ def draw_hud(g):
     weather_names = {'clear': '晴朗', 'rain': '雨天', 'fog': '迷雾', 'storm': '风暴'}
     time_text = f"{phase_icons.get(phase, '')} {phase_names.get(phase, '')} {weather_icons.get(weather, '')} {weather_names.get(weather, '')}"
     draw_text(g.screen, time_text, (SCREEN_W - 140, 108), g.assets.font_sm, (140, 160, 180))
+
+
+def _draw_direction_arrow(g, target):
+    """在屏幕边缘绘制指向目标的方向箭头"""
+    tx, ty = target
+    px, py = g.player.tx, g.player.ty
+    dx, dy = tx - px, ty - py
+    dist = math.sqrt(dx * dx + dy * dy)
+    if dist < 2:
+        # 目标很近，画一个脉冲圆圈提示而非箭头
+        scr_tx = (tx - px) * TILE + SCREEN_W // 2
+        scr_ty = (ty - py) * TILE + SCREEN_H // 2
+        if 0 <= scr_tx < SCREEN_W and 0 <= scr_ty < SCREEN_H:
+            pulse = int(abs(math.sin(pygame.time.get_ticks() * 0.005)) * 80) + 40
+            ring_surf = pygame.Surface((28, 28), pygame.SRCALPHA)
+            pygame.draw.circle(ring_surf, (0, 255, 200, pulse), (14, 14), 12, 2)
+            g.screen.blit(ring_surf, (scr_tx - 14, scr_ty - 14))
+        return
+
+    angle = math.atan2(dy, dx)
+    # 箭头位置：屏幕边缘，任务提示上方
+    arrow_cx = SCREEN_W // 2 + int(math.cos(angle) * 60)
+    arrow_cy = SCREEN_H - 38
+
+    # 脉冲透明度
+    pulse_a = int(abs(math.sin(pygame.time.get_ticks() * 0.004)) * 100) + 155
+    arrow_surf = pygame.Surface((24, 24), pygame.SRCALPHA)
+
+    # 画三角箭头（指向angle方向）
+    size = 10
+    tip = (12 + math.cos(angle) * size, 12 + math.sin(angle) * size)
+    left = (12 + math.cos(angle + 2.5) * size * 0.7, 12 + math.sin(angle + 2.5) * size * 0.7)
+    right = (12 + math.cos(angle - 2.5) * size * 0.7, 12 + math.sin(angle - 2.5) * size * 0.7)
+    pygame.draw.polygon(arrow_surf, (0, 255, 200, pulse_a), [tip, left, right])
+
+    g.screen.blit(arrow_surf, (arrow_cx - 12, arrow_cy - 12))
+
+    # 距离文字
+    wp = _QUEST_WAYPOINTS.get(g.player.quest_stage)
+    if wp:
+        label = wp[3]
+        in_same_area = g.player.area == wp[0]
+        dist_text = f"{label} {int(dist)}" if in_same_area else f"→{label}"
+        draw_text(g.screen, dist_text, (arrow_cx, arrow_cy + 10),
+                  g.assets.font_sm, (0, 220, 180), center=True)
 
 
 _MINIMAP_TILE_COLORS = {
@@ -370,7 +493,36 @@ def draw_minimap(g):
             npy = int(npc.y * sy)
             pygame.draw.rect(mm_surf, (255, 220, 50, 255), (npx, npy, 2, 2))
 
+    # 任务目标标记（脉冲菱形）
+    wp_target = _get_waypoint_target(g)
+    if wp_target:
+        wtx, wty = wp_target
+        wmx = int(wtx * sx)
+        wmy = int(wty * sy)
+        pulse = int(abs(math.sin(pygame.time.get_ticks() * 0.005)) * 155) + 100
+        pygame.draw.polygon(mm_surf, (255, 80, 80, pulse),
+                            [(wmx, wmy - 3), (wmx + 3, wmy), (wmx, wmy + 3), (wmx - 3, wmy)])
+
+    # 出口标记（小地图边缘的绿色短线）
+    transitions = g.game_map.transitions.get(area, [])
+    for t in transitions:
+        ex = int(t[0] * sx)
+        ey = int(t[1] * sy)
+        ex = max(0, min(mm_w - 2, ex))
+        ey = max(0, min(mm_h - 2, ey))
+        pygame.draw.rect(mm_surf, (0, 255, 140, 200), (ex, ey, 2, 2))
+
     # 边框
     pygame.draw.rect(mm_surf, (140, 120, 180, 200), (0, 0, mm_w, mm_h), 2)
 
     g.screen.blit(mm_surf, (mm_x, mm_y))
+
+    # 小地图下方显示区域名
+    _AREA_NAMES = {
+        AREA_VILLAGE: "数据港", AREA_FOREST: "废墟荒地", AREA_DUNGEON: "旧数据中心",
+        AREA_NEON_STREET: "霓虹街", AREA_FACTORY: "废弃工厂", AREA_CYBERSPACE: "网络空间",
+        AREA_TUNNEL: "地下通道", AREA_BLACK_MARKET: "黑市", AREA_HOME: "家园",
+    }
+    area_name = _AREA_NAMES.get(area, area)
+    draw_text(g.screen, area_name, (mm_x + mm_w // 2, mm_y + mm_h + 2),
+              g.assets.font_sm, (120, 140, 160), center=True)
