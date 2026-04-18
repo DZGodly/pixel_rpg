@@ -119,6 +119,8 @@ class Game:
         self.skill_tree_tier = 0
         # 升级商店
         self.upgrade_index = 0
+        # 标题闪烁
+        self.title_blink = 0
         # 通关动画
         self.ending_timer = 0
         self.ending_particles = ParticleSystem()
