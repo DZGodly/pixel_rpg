@@ -459,6 +459,7 @@ class Game:
         self.farm_index = 0       # 当前选中的菜地
         self.farm_seed_index = 0  # 种子选择
         self.farm_mode = 0        # 0=查看, 1=选种子
+        self.sprint_toggle = False  # Shift切换跑步
 
         # 宠物系统
         self.pet_menu_index = 0
@@ -476,7 +477,11 @@ class Game:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     running = False
-                self._handle_event(event)
+                try:
+                    self._handle_event(event)
+                except Exception as e:
+                    import traceback
+                    traceback.print_exc()
             try:
                 self._update()
                 self._draw()
@@ -540,6 +545,8 @@ class Game:
                     self.show_inventory = False
                 elif event.key == pygame.K_F5:
                     self._save_game()
+                elif event.key in (pygame.K_LSHIFT, pygame.K_RSHIFT):
+                    self.sprint_toggle = not self.sprint_toggle
                 elif event.key == pygame.K_j:
                     # 检查面前是否为水瓦片 → 钓鱼
                     dx, dy = 0, 0
@@ -913,9 +920,8 @@ class Game:
         self.player.moving = dx != 0 or dy != 0
 
         if self.player.moving:
-            # Shift跑步
-            running = keys[pygame.K_LSHIFT] or keys[pygame.K_RSHIFT]
-            spd = self.player.run_speed if running else self.player.speed
+            # Shift切换跑步模式
+            spd = self.player.run_speed if self.sprint_toggle else self.player.speed
             # 斜向移动时归一化，保持速度一致
             if dx != 0 and dy != 0:
                 factor = 0.7071  # 1/sqrt(2)
