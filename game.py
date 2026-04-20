@@ -59,6 +59,27 @@ from systems_interact import (interact as _interact_main,
                               handle_npc_interact as _interact_npc,
                               handle_romance_interact as _interact_romance,
                               handle_gift_input as _interact_gift)
+from systems_new import (start_hacking as _hack_start,
+                         handle_hacking_event as _hack_handle_event,
+                         draw_hacking as _hack_draw,
+                         handle_crafting_event as _craft_handle_event,
+                         draw_crafting as _craft_draw,
+                         start_arena as _arena_start,
+                         on_arena_combat_end as _arena_on_end,
+                         start_daily_challenge as _daily_start,
+                         on_daily_combat_end as _daily_on_end,
+                         handle_quest_chain_event as _quest_chain_handle_event,
+                         draw_quest_chain as _quest_chain_draw,
+                         start_pet_battle as _pet_battle_start,
+                         handle_pet_battle_event as _pet_battle_handle_event,
+                         draw_pet_battle as _pet_battle_draw,
+                         handle_home_decor_event as _home_decor_handle_event,
+                         draw_home_decor as _home_decor_draw,
+                         handle_ng_plus_event as _ng_plus_handle_event,
+                         draw_ng_plus_confirm as _ng_plus_draw,
+                         trigger_ng_plus as _ng_plus_trigger,
+                         update_quest_chain_kill as _quest_chain_update_kill,
+                         get_furniture_bonuses as _get_furniture_bonuses)
 
 # ============================================================
 # 主游戏类
@@ -385,6 +406,12 @@ class Game:
             NPC(8, 14, 'ai_prophet', '每日挑战终端',
                 ["[系统] 每日挑战已上线。", "每天一次特殊战斗条件，完成获得奖励！按J参加。"],
                 AREA_NEON_STREET),
+            NPC(18, 6, 'ai_prophet', '入侵终端',
+                ["[系统] 检测到可入侵节点。", "破解密码获取数据奖励！按J开始入侵。"],
+                AREA_NEON_STREET),
+            NPC(22, 16, 'factory_worker', '据点管理员',
+                ["想装饰你的据点吗？", "家具可以提供永久被动加成！按J查看。"],
+                AREA_VILLAGE),
         ]
 
         # 宝箱位置
@@ -626,6 +653,7 @@ class Game:
                 if self.ending_timer > 180:
                     self.state = GameState.EXPLORE
                     self.message_queue.append(("通关！自由探索模式已解锁。", 180))
+                    self.message_queue.append(("按M打开菜单，选择New Game+开始新轮回！", 180))
 
     def _handle_menu_event(self, event):
         if event.type != pygame.KEYDOWN:
@@ -649,9 +677,9 @@ class Game:
         if event.key == pygame.K_ESCAPE or event.key == pygame.K_x:
             self.state = GameState.EXPLORE
         elif event.key == pygame.K_UP:
-            self.menu_index = (self.menu_index - 1) % 11
+            self.menu_index = (self.menu_index - 1) % 12
         elif event.key == pygame.K_DOWN:
-            self.menu_index = (self.menu_index + 1) % 11
+            self.menu_index = (self.menu_index + 1) % 12
         elif event.key in (pygame.K_RETURN, pygame.K_j):
             if self.menu_index == 0:  # 物品
                 self.show_inventory = True
@@ -684,7 +712,12 @@ class Game:
                 self.state = GameState.EXPLORE
             elif self.menu_index == 9:  # 读取
                 self._load_game()
-            elif self.menu_index == 10:  # 返回
+            elif self.menu_index == 10:  # NG+
+                if self.player.quest_stage >= 5:
+                    _ng_plus_trigger(self)
+                else:
+                    self.message_queue.append(("通关后才能使用New Game+！", 90))
+            elif self.menu_index == 11:  # 返回
                 self.state = GameState.EXPLORE
 
     def _interact(self):
@@ -736,6 +769,45 @@ class Game:
     def _claim_bounty_reward(self, ab, bdef):
         from systems_bounty import _claim_bounty_reward
         _claim_bounty_reward(self, ab, bdef)
+
+    # ============================================================
+    # v0.13 新系统
+    # ============================================================
+    def _start_hacking(self):
+        _hack_start(self)
+
+    def _handle_hacking_event(self, event):
+        _hack_handle_event(self, event)
+
+    def _handle_crafting_event(self, event):
+        _craft_handle_event(self, event)
+
+    def _start_arena(self):
+        _arena_start(self)
+
+    def _on_arena_combat_end(self):
+        _arena_on_end(self)
+
+    def _start_daily_challenge(self):
+        _daily_start(self)
+
+    def _on_daily_combat_end(self):
+        _daily_on_end(self)
+
+    def _handle_quest_chain_event(self, event):
+        _quest_chain_handle_event(self, event)
+
+    def _start_pet_battle(self):
+        _pet_battle_start(self)
+
+    def _handle_pet_battle_event(self, event):
+        _pet_battle_handle_event(self, event)
+
+    def _handle_home_decor_event(self, event):
+        _home_decor_handle_event(self, event)
+
+    def _handle_ng_plus_event(self, event):
+        _ng_plus_handle_event(self, event)
 
     # ============================================================
     # 天气/时间系统
@@ -793,6 +865,8 @@ class Game:
         if self.combat.state == CombatState.VICTORY:
             # 图鉴登录
             p.codex_monsters.add(self.combat.enemy_key)
+            # 任务链击杀进度
+            _quest_chain_update_kill(p, self.combat.enemy_key)
             if p.side_quests.get('merc_hunt') == 1:
                 p.quest_counters['merc_hunt'] = p.quest_counters.get('merc_hunt', 0) + 1
                 cnt = p.quest_counters['merc_hunt']
@@ -1510,7 +1584,7 @@ class Game:
         else:
             options = ["[I] 物品", "[S] 状态", "[T] 技能树", "[F] 家园", "[P] 宠物",
                        "[C] 烹饪", "[D] 图鉴", "[Q] 任务链",
-                       "[W] 保存", "[L] 读取", "[X] 返回"]
+                       "[W] 保存", "[L] 读取", "[N] NG+", "[X] 返回"]
             for i, opt in enumerate(options):
                 color = C_YELLOW if i == self.menu_index else C_WHITE
                 prefix = ">> " if i == self.menu_index else "   "
@@ -1558,6 +1632,24 @@ class Game:
 
     def _draw_bounty_board(self):
         _bounty_draw(self)
+
+    def _draw_hacking(self):
+        _hack_draw(self)
+
+    def _draw_crafting(self):
+        _craft_draw(self)
+
+    def _draw_quest_chain(self):
+        _quest_chain_draw(self)
+
+    def _draw_pet_battle(self):
+        _pet_battle_draw(self)
+
+    def _draw_home_decor(self):
+        _home_decor_draw(self)
+
+    def _draw_ng_plus_confirm(self):
+        _ng_plus_draw(self)
 
     def _draw_game_over(self):
         self.screen.fill(C_BLACK)

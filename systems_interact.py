@@ -283,6 +283,14 @@ def handle_npc_interact(g, npc):
     if npc.name == '每日挑战终端':
         g._start_daily_challenge()
         return
+    if npc.name == '入侵终端':
+        g._start_hacking()
+        return
+    if npc.name == '据点管理员':
+        from game import GameState
+        g.state = GameState.HOME_DECOR
+        g.home_decor_index = 0
+        return
 
     g.dialogue.start(npc, p.quest_stage)
 
